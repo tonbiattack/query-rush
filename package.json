@@ -1,0 +1,15 @@
+{
+  "name": "query-rush",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "寿司職人ゲーム × SQL の高速クエリ組み立てアクション",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "check:orders": "node scripts/check-orders.js"
+  },
+  "engines": {
+    "node": ">=22.16.0"
+  }
+}

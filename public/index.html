@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QUERY RUSH</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="hud">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">QR</span>
+          <span class="brand-name">QUERY RUSH</span>
+        </div>
+
+        <div class="timer" role="timer" aria-live="off">
+          <div class="timer-track"><div class="timer-fill" id="timer-fill"></div></div>
+          <span class="timer-text" id="timer-text">60.0</span>
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <span class="stat-label">スコア</span>
+            <span class="stat-value" id="score">0</span>
+          </div>
+          <div class="stat stat-combo">
+            <span class="stat-label">コンボ</span>
+            <span class="stat-value" id="combo">×1.00</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">ミス</span>
+            <span class="stat-value" id="misses">0</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="bands">
+        <section class="band band-top" aria-label="注文票と完成形">
+          <article class="ticket" id="ticket">
+            <div class="ticket-head">
+              <span class="ticket-no" id="ticket-no">注文 #1</span>
+              <span class="ticket-trap" id="ticket-trap">罠なし</span>
+            </div>
+            <p class="ticket-text" id="ticket-text">—</p>
+            <p class="ticket-hint" id="ticket-hint"></p>
+            <p class="ticket-trap-note" id="ticket-trap-note"></p>
+          </article>
+
+          <article class="target">
+            <h2 class="panel-title">完成形</h2>
+            <div class="target-body" id="target-body"></div>
+          </article>
+        </section>
+
+        <section class="band band-mid" aria-label="テーブルとライブプレビュー">
+          <div class="sql-bar">
+            <code class="sql" id="sql"></code>
+            <span class="sql-meta" id="sql-meta"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" id="data-table">
+              <thead id="data-head"></thead>
+              <tbody id="data-body"></tbody>
+            </table>
+            <div class="agg-note" id="agg-note" hidden></div>
+          </div>
+        </section>
+
+        <section class="band band-bottom" aria-label="句チップの棚">
+          <div class="shelf" id="shelf"></div>
+          <div class="actions">
+            <button type="button" class="btn btn-ghost" id="clear">クリア</button>
+            <button type="button" class="btn btn-serve" id="serve">提供する</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="overlay" id="overlay" hidden>
+      <div class="overlay-card" id="overlay-card"></div>
+    </div>
+
+    <div class="floaters" id="floaters" aria-hidden="true"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
