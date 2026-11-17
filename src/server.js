@@ -8,12 +8,12 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG } from './config.js';
-import { CHIPS, SHELF_LAYOUT } from './chips.js';
 import { createDatabase, openEngine } from './engine.js';
 import { createGame } from './game.js';
+import { buildQuestionBank } from './questions.js';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const PUBLIC_DIR = join(ROOT, 'public');
@@ -28,34 +28,43 @@ const MIME = {
 };
 
 export function createApp({ dbPath } = {}) {
-  // プレイデータは固定シード。過去のバージョンのDBを再利用せず、
-  // 起動ごとに専用の一時DBを作って読み取り専用で開く。
+  // 問題データは固定シード。起動ごとに専用の一時DBを作って読み取り専用で開く。
   const tempDir = dbPath ? null : mkdtempSync(join(tmpdir(), 'query-rush-'));
   if (tempDir) dbPath = createDatabase(join(tempDir, 'game.db'));
   const engine = openEngine(dbPath);
-  const game = createGame({ engine });
+  const bank = buildQuestionBank(engine);
+  if (bank.length === 0) throw new Error('問題を1問も生成できませんでした');
+
+  let game = createGame({ bank });
 
   const routes = {
     'GET /api/bootstrap': () => ({
       config: {
-        sprintSeconds: CONFIG.sprintSeconds,
-        queryTimeoutMs: CONFIG.queryTimeoutMs,
-        maxRows: CONFIG.maxRows,
+        timeAttackSeconds: CONFIG.timeAttackSeconds,
+        questionSecondsOptions: CONFIG.questionSecondsOptions,
+        defaultQuestionSeconds: CONFIG.defaultQuestionSeconds,
         basePoints: CONFIG.basePoints,
-        comboStep: CONFIG.comboStep,
-        comboMaxMultiplier: CONFIG.comboMaxMultiplier,
-        timeBonusPerSecond: CONFIG.timeBonusPerSecond,
-        timeBonusWindowSeconds: CONFIG.timeBonusWindowSeconds,
+        speedBonusMax: CONFIG.speedBonusMax,
+        streakStep: CONFIG.streakStep,
+        streakBonusMax: CONFIG.streakBonusMax,
+        revealSeconds: CONFIG.revealSeconds,
+        maxTableRows: CONFIG.maxTableRows,
+        choiceCount: CONFIG.choiceCount,
       },
-      chips: CHIPS,
-      shelf: SHELF_LAYOUT,
-      allRows: game.allRows,
+      questionCount: bank.length,
       state: game.view(),
     }),
-    'POST /api/start': () => game.start(),
-    'POST /api/chip': (body) => game.toggleChip(String(body.chipId ?? '')),
-    'POST /api/clear': () => game.clearPlacement(),
-    'POST /api/serve': () => game.serve(),
+    'POST /api/start': (body) => {
+      const seconds = Number(body.questionSeconds);
+      const allowed = CONFIG.questionSecondsOptions.includes(seconds)
+        ? seconds
+        : CONFIG.defaultQuestionSeconds;
+      game = createGame({ bank, questionSeconds: allowed });
+      return game.start();
+    },
+    'POST /api/answer': (body) => game.answer(String(body.choiceId ?? '')),
+    'POST /api/next': () => game.next(),
+    'POST /api/tick': () => game.tick(),
     'GET /api/state': () => game.view(),
   };
 
@@ -79,7 +88,7 @@ export function createApp({ dbPath } = {}) {
     const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
     const target = normalize(join(PUBLIC_DIR, relative));
     // ディレクトリトラバーサル防止
-    if (target !== PUBLIC_DIR && !target.startsWith(`${PUBLIC_DIR}${process.platform === 'win32' ? '\\' : '/'}`)) {
+    if (target !== PUBLIC_DIR && !target.startsWith(`${PUBLIC_DIR}${sep}`)) {
       res.writeHead(403).end('forbidden');
       return;
     }
@@ -104,12 +113,15 @@ export function createApp({ dbPath } = {}) {
     }
     if (req.method === 'POST') {
       const origin = req.headers.origin;
-      if ((origin && origin !== `http://${host}`) ||
-          !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')) {
+      if (
+        (origin && origin !== `http://${host}`) ||
+        !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] ?? '')
+      ) {
         res.writeHead(403).end('forbidden');
         return;
       }
     }
+
     const key = `${req.method} ${url.pathname}`;
     const handler = routes[key];
 
@@ -120,7 +132,8 @@ export function createApp({ dbPath } = {}) {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify(payload));
       } catch (error) {
-        res.writeHead(error?.message === 'request too large' ? 413 : 500, { 'content-type': 'application/json; charset=utf-8' });
+        const tooLarge = error instanceof Error && error.message === 'request too large';
+        res.writeHead(tooLarge ? 413 : 500, { 'content-type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
       }
       return;
@@ -141,7 +154,7 @@ export function createApp({ dbPath } = {}) {
       rmSync(tempDir, { recursive: true, force: true });
     });
   }
-  return { server, engine, game };
+  return { server, engine, game: () => game, bank };
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

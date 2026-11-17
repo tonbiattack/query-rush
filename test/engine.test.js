@@ -5,21 +5,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  assertSelectOnly,
-  buildQuery,
+  assertAllowedWhere,
+  assertTableName,
   createDatabase,
-  diffRows,
   openEngine,
-  rowKeyOf,
+  signatureOf,
 } from '../src/engine.js';
 import { CONFIG } from '../src/config.js';
+import { DATASETS } from '../src/data.js';
 
 let dir;
 let dbPath;
 let engine;
 
 before(() => {
-  dir = mkdtempSync(join(tmpdir(), 'query-rush-test-'));
+  dir = mkdtempSync(join(tmpdir(), 'query-rush-engine-'));
   dbPath = join(dir, 'test.db');
   createDatabase(dbPath);
   engine = openEngine(dbPath);
@@ -30,125 +30,130 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('assertSelectOnly', () => {
-  test('SELECTは通る', () => {
-    assert.equal(assertSelectOnly('SELECT * FROM items'), 'SELECT * FROM items');
-  });
-
-  test('SELECT以外は拒否する', () => {
-    for (const sql of [
-      'DELETE FROM items',
-      'DROP TABLE items',
-      'UPDATE items SET price = 0',
-      'INSERT INTO items VALUES (1)',
-      'PRAGMA table_info(items)',
-      'ATTACH DATABASE "x" AS y',
+describe('assertAllowedWhere', () => {
+  test('単一の比較式は通る', () => {
+    for (const where of [
+      'price > 1000',
+      'price >= 1000',
+      "status != 'returned'",
+      "status = 'paid'",
+      'qty < 3',
+      'stock IS NULL',
+      'member IS NOT NULL',
+      'total <= 960',
     ]) {
-      assert.throws(() => assertSelectOnly(sql), /SELECT以外|許可されていない/, sql);
+      assert.equal(assertAllowedWhere(where), where);
     }
   });
 
-  test('複数文は拒否する', () => {
-    assert.throws(() => assertSelectOnly('SELECT * FROM items; DROP TABLE items'), /複数文/);
+  test('複合条件・OR・サブクエリは拒否する', () => {
+    for (const where of [
+      'price > 1000 AND stock > 0',
+      'price > 1000 OR stock > 0',
+      'price > (SELECT 1)',
+      'EXISTS (SELECT 1)',
+      '1 = 1',
+    ]) {
+      assert.throws(() => assertAllowedWhere(where), /許可されていません/, where);
+    }
   });
 
-  test('SELECTで始まらない小細工を拒否する', () => {
-    assert.throws(() => assertSelectOnly('  -- comment\nDELETE FROM items'), /SELECT以外/);
+  test('文を継ぎ足す小細工を拒否する', () => {
+    for (const where of [
+      'price > 1000; DROP TABLE menu',
+      'price > 1000 -- comment',
+      'price > 1000 /* x */',
+      '',
+    ]) {
+      assert.throws(() => assertAllowedWhere(where), /許可されない|空です/, where);
+    }
   });
 });
 
-describe('buildQuery', () => {
-  test('チップが無ければ全件SELECT', () => {
-    assert.equal(buildQuery({}), 'SELECT * FROM items');
-  });
-
-  test('WHEREは棚の並び順で安定する', () => {
-    const a = buildQuery({ where: ['w_stock', 'w_returned'] });
-    const b = buildQuery({ where: ['w_returned', 'w_stock'] });
-    assert.equal(a, b);
-    assert.match(a, /WHERE status != 'returned' AND stock > 0/);
-  });
-
-  test('ORDER BYには安定キーを足す（重複行の罠対策）', () => {
-    assert.match(buildQuery({ orderBy: 'o_sales' }), /ORDER BY sales DESC, id$/);
-  });
-
-  test('GROUP BY時は集計列を選び、並びも集計関数になる', () => {
-    const sql = buildQuery({ groupBy: 'g_category', orderBy: 'o_sales' });
-    assert.match(sql, /SELECT category, COUNT\(\*\) AS 件数, SUM\(sales\) AS 売上/);
-    assert.match(sql, /GROUP BY category/);
-    assert.match(sql, /ORDER BY SUM\(sales\) DESC, category/);
-  });
-
-  test('不正なチップIDは無視する', () => {
-    assert.equal(buildQuery({ where: ['nope'], orderBy: 'w_price' }), 'SELECT * FROM items');
+describe('assertTableName', () => {
+  test('識別子だけ通す', () => {
+    assert.equal(assertTableName('menu'), 'menu');
+    for (const name of ['menu; DROP TABLE x', 'menu--', '1menu', '']) {
+      assert.throws(() => assertTableName(name), /不正です/, name);
+    }
   });
 });
 
 describe('openEngine', () => {
   test('読み取り専用で開くので書き込みできない', () => {
     const ro = new DatabaseSync(dbPath, { readOnly: true });
-    assert.throws(() => ro.exec("INSERT INTO items (item) VALUES ('x')"), /readonly|read-only/i);
+    assert.throws(() => ro.exec("INSERT INTO menu (name) VALUES ('x')"), /readonly|read-only/i);
     ro.close();
   });
 
-  test('全行を返す', () => {
-    const rows = engine.allRows();
-    assert.ok(rows.length >= 20);
-    assert.ok(rows.every((r) => typeof r.item === 'string'));
+  test('絞り込み前の全行を返す', () => {
+    for (const dataset of DATASETS) {
+      const rows = engine.baseRows(dataset);
+      assert.equal(rows.length, dataset.rows.length, dataset.id);
+      assert.ok(rows.every((row) => typeof row.id === 'number'));
+    }
   });
 
-  test('チップ配置を実行して結果行とハイライト対象を返す', () => {
-    const result = engine.run({ where: ['w_returned'], orderBy: 'o_sales', limit: 'l_3' });
-    assert.equal(result.error, null);
-    assert.equal(result.rows.length, 3);
-    assert.deepEqual(result.highlight, result.rows.map((r) => r.id));
+  test('候補WHEREを実行して絞り込み後テーブルを作れる', () => {
+    const dataset = DATASETS.find((d) => d.id === 'menu');
+    const result = engine.runWhere(dataset, "status != 'returned'");
+    assert.equal(result.ok, true);
+    assert.ok(result.rows.length > 0);
+    assert.ok(result.rows.every((row) => row.status !== 'returned'));
     assert.ok(result.durationMs < CONFIG.queryTimeoutMs);
   });
 
-  test('集計時はハイライト対象がcategoryになる', () => {
-    const result = engine.run({ groupBy: 'g_category' });
-    assert.equal(result.key, 'category');
-    assert.deepEqual(result.highlight, result.rows.map((r) => r.category));
+  test('不正なWHEREは例外ではなくerrorで返す', () => {
+    const dataset = DATASETS.find((d) => d.id === 'menu');
+    const result = engine.runWhere(dataset, 'price > 1000; DROP TABLE menu');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /許可されない/);
+    assert.deepEqual(result.rows, []);
   });
 
-  test('101行以上なら取得上限で打ち切る', () => {
-    const path = join(dir, 'large.db');
-    createDatabase(path);
-    const writable = new DatabaseSync(path);
-    writable.exec(`INSERT INTO items (item, category, price, list_price, status, sales, sales_count, stock)
-      SELECT '追加', '一品', 100, 100, 'served', 100, 1, 1 FROM items a, items b LIMIT 100`);
+  test('前後テーブルの差分（残った行／消えた行）を返す', () => {
+    const dataset = DATASETS.find((d) => d.id === 'menu');
+    const before = engine.baseRows(dataset);
+    const after = engine.runWhere(dataset, "status = 'returned'").rows;
+    const diff = engine.diffRows(before, after);
+
+    assert.deepEqual(diff.kept, after.map((row) => row.id));
+    assert.equal(diff.kept.length + diff.removed.length, before.length);
+    assert.ok(diff.removed.length > 0);
+    assert.deepEqual(diff.added, []);
+  });
+
+  test('取得上限を超えたら打ち切ってエラーにする', () => {
+    // 上限を超える行を持つテーブルを別途作って確認する
+    const bigPath = join(dir, 'big.db');
+    createDatabase(bigPath);
+    const writable = new DatabaseSync(bigPath);
+    writable.exec(
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 150)
+       INSERT INTO menu (name, price, list_price, status, stock)
+       SELECT '追加' || n, 100, 100, 'served', 1 FROM seq`,
+    );
     writable.close();
-    const limited = openEngine(path);
+
+    const bigEngine = openEngine(bigPath);
     try {
-      const result = limited.run({});
+      const dataset = DATASETS.find((d) => d.id === 'menu');
+      const result = bigEngine.runWhere(dataset, 'price > 0');
       assert.equal(result.truncated, true);
-      assert.equal(result.rows.length, CONFIG.maxRows);
+      assert.equal(result.ok, false);
+      assert.ok(result.rows.length <= CONFIG.maxRows);
     } finally {
-      limited.close();
+      bigEngine.close();
     }
   });
 });
 
-describe('diffRows', () => {
-  test('増えた行・減った行・並びの変化を返す', () => {
-    const prev = [{ id: 1 }, { id: 2 }, { id: 3 }];
-    const next = [{ id: 2 }, { id: 1 }, { id: 4 }];
-    const diff = diffRows(prev, next, 'id');
-    assert.deepEqual(diff.added, [4]);
-    assert.deepEqual(diff.removed, [3]);
-    assert.deepEqual(diff.moved, [2, 1]);
-  });
-
-  test('変化が無ければ空', () => {
-    const rows = [{ id: 1 }, { id: 2 }];
-    assert.deepEqual(diffRows(rows, rows, 'id'), { added: [], removed: [], moved: [] });
-  });
-});
-
-describe('rowKeyOf', () => {
-  test('集計時はcategory、通常時はid', () => {
-    assert.equal(rowKeyOf({ groupBy: 'g_category' }), 'category');
-    assert.equal(rowKeyOf({}), 'id');
+describe('signatureOf', () => {
+  test('列と値の両方で結果を区別する', () => {
+    const columns = ['name', 'price'];
+    const a = [{ name: 'x', price: 1 }];
+    const b = [{ name: 'x', price: 2 }];
+    assert.notEqual(signatureOf(a, columns), signatureOf(b, columns));
+    assert.equal(signatureOf(a, columns), signatureOf([{ name: 'x', price: 1 }], columns));
   });
 });

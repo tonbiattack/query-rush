@@ -1,13 +1,13 @@
 {
   "name": "query-rush",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "寿司職人ゲーム × SQL の高速クエリ組み立てアクション",
+  "description": "UI Rush の骨格を SQL に移植した、4択で選ぶ認識ゲーム",
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "check:orders": "node scripts/check-orders.js"
+    "check:questions": "node scripts/check-questions.js"
   },
   "engines": {
     "node": ">=22.16.0"

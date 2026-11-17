@@ -1,50 +1,50 @@
 /**
  * QUERY RUSH のクライアント。
  *
- * 状態はサーバーが持つ。ここは「押したら即座に反映する」ことだけに集中する。
- * チップを押す → /api/chip → 返ってきたスナップショットで描き直す。
+ * 状態はサーバーが持つ。ここは「見て選ぶ」テンポだけに集中する。
+ * チップを押す → /api/answer → 返ってきたスナップショットで描き直す。
+ *
+ * タイマーはクライアント側で補間する（毎フレームAPIを叩かない）。
+ * 時間切れはサーバーに確定させる。
  */
 
 const $ = (id) => document.getElementById(id);
 
 const el = {
-  timerFill: $('timer-fill'),
-  timerText: $('timer-text'),
-  timer: document.querySelector('.timer'),
+  app: $('app'),
+  sessionFill: $('session-fill'),
+  sessionText: $('session-text'),
+  session: document.querySelector('.session'),
   score: $('score'),
-  combo: $('combo'),
-  misses: $('misses'),
-  ticketNo: $('ticket-no'),
-  ticketTrap: $('ticket-trap'),
-  ticketText: $('ticket-text'),
-  ticketHint: $('ticket-hint'),
-  ticketTrapNote: $('ticket-trap-note'),
-  targetBody: $('target-body'),
-  sql: $('sql'),
-  sqlMeta: $('sql-meta'),
-  dataHead: $('data-head'),
-  dataBody: $('data-body'),
-  dataTable: $('data-table'),
-  aggregateNote: $('agg-note'),
-  shelf: $('shelf'),
-  clear: $('clear'),
-  serve: $('serve'),
+  streak: $('streak'),
+  correct: $('correct'),
+  beforeBody: $('before-body'),
+  afterBody: $('after-body'),
+  askText: $('ask-text'),
+  potential: $('potential'),
+  potentialValue: $('potential-value'),
+  choices: $('choices'),
+  reveal: $('reveal'),
+  revealVerdict: $('reveal-verdict'),
+  revealExplanation: $('reveal-explanation'),
+  nextBtn: $('next-btn'),
   overlay: $('overlay'),
   overlayCard: $('overlay-card'),
   floaters: $('floaters'),
-  app: document.querySelector('.app'),
 };
 
 const state = {
   boot: null,
   view: null,
-  /** タイマーはクライアント側で補間する（毎フレームAPIを叩かない） */
-  endsAt: 0,
+  /** セッション全体の締切（performance.now基準） */
+  sessionEndsAt: 0,
+  /** 現在の問題の締切（performance.now基準） */
+  questionEndsAt: 0,
   raf: 0,
+  /** 選択した制限時間（秒） */
+  questionSeconds: 5,
   actions: Promise.resolve(),
 };
-
-const TRAP_LABEL = { 1: '罠なし', 2: '似た列名', 3: 'NULL・重複' };
 
 /* ── API ─────────────────────────────────────────── */
 
@@ -65,159 +65,93 @@ function render(view) {
   state.view = view;
 
   renderHud(view);
-  renderTicket(view);
-  renderTarget(view);
-  renderSql(view);
-  renderTable(view);
-  renderShelf(view);
+  renderTables(view);
+  renderChoices(view);
+  renderReveal(view);
   renderOverlay(view);
   renderEvents(view, previous);
 }
 
 function renderHud(view) {
   el.score.textContent = String(view.score);
-  el.combo.textContent = `×${view.comboMultiplier.toFixed(2)}`;
-  el.misses.textContent = String(view.misses);
+  el.streak.textContent = String(view.streak);
+  el.correct.textContent = String(view.correct);
 }
 
-function renderTicket(view) {
-  const order = view.order;
-  el.ticketNo.textContent = `注文 #${view.served + 1}`;
-  el.ticketTrap.textContent = TRAP_LABEL[order.difficulty] ?? '罠なし';
-  el.ticketTrap.dataset.level = String(order.difficulty);
-  el.ticketText.textContent = order.ticket;
-  el.ticketHint.textContent = order.hint ?? '';
-  el.ticketHint.hidden = !order.hint;
-  el.ticketTrapNote.textContent = order.trap ?? '';
-  el.ticketTrapNote.hidden = !order.trap;
+function renderTables(view) {
+  const question = view.question;
+  if (!question) return;
+
+  const removed = new Set(question.diff.removed);
+  const kept = new Set(question.diff.kept);
+
+  el.beforeBody.replaceChildren(
+    buildTable(question.columns, question.before, (row) =>
+      removed.has(row.id) ? 'is-removed' : kept.has(row.id) ? 'is-kept' : '',
+    ),
+  );
+  el.afterBody.replaceChildren(
+    buildTable(question.columns, question.after, () => 'is-kept'),
+  );
 }
 
-function renderTarget(view) {
-  const { columns, rows } = view.order.target;
-  el.targetBody.replaceChildren(buildTable(columns, rows, null, { compact: true }));
-}
+function renderChoices(view) {
+  const question = view.question;
+  if (!question) return;
 
-function renderSql(view) {
-  el.sql.innerHTML = highlightSql(view.sql || 'SELECT * FROM items');
-  const meta = view.result;
-  if (!meta) {
-    el.sqlMeta.textContent = '';
-    return;
-  }
-  const parts = [`結果 ${meta.rows.length}行`, `${meta.durationMs.toFixed(1)}ms`];
-  if (meta.error) parts.push(meta.error);
-  if (meta.truncated) parts.push('上限で打ち切り');
-  if (meta.overBudget) parts.push('コスト超過');
-  el.sqlMeta.textContent = parts.join(' · ');
-  el.sqlMeta.classList.toggle('is-over', Boolean(meta.error || meta.overBudget || meta.truncated));
-}
+  const reveal = view.reveal;
+  const answered = view.phase === 'revealed';
 
-function renderTable(view) {
-  const result = view.result;
-  if (!result) return;
-
-  const aggregate = result.key === 'category';
-  el.dataTable.classList.toggle('is-aggregate', aggregate);
-
-  const hasChips = view.placement.where.length > 0 || view.placement.orderBy || view.placement.limit;
-  const hitKeys = hasChips ? new Set(result.highlight) : new Set();
-  const added = new Set(result.diff?.added ?? []);
-  const moved = new Set(result.diff?.moved ?? []);
-  const allRows = state.boot.allRows;
-
-  if (aggregate) {
-    el.dataHead.replaceChildren(buildHead(result.columns));
-    el.dataBody.replaceChildren(
-      ...result.rows.map((row) => {
-        const tr = document.createElement('tr');
-        tr.className = 'is-hit';
-        for (const column of result.columns) {
-          const td = document.createElement('td');
-          const value = row[column];
-          td.textContent = formatCell(value);
-          if (typeof value === 'number') td.className = 'num';
-          tr.append(td);
-        }
-        return tr;
-      }),
-    );
-    renderAggregateNote(result);
-    return;
-  }
-
-  el.aggregateNote.hidden = true;
-
-  el.dataHead.replaceChildren(buildHead(state.boot.columns));
+  // 選択肢の並びは問題ごとに固定。revealed中は同じ並びのまま色を付ける。
   const fragment = document.createDocumentFragment();
+  view.choices.forEach((choice, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'choice';
+    button.dataset.choiceId = choice.id;
+    button.disabled = answered;
 
-  // 結果の並び順を先に表示し、除外された行はその後ろに薄く残す。
-  const resultIds = new Set(result.rows.map((row) => row.id));
-  const visibleRows = [...result.rows, ...allRows.filter((row) => !resultIds.has(row.id))];
-  for (const row of visibleRows) {
-    const tr = document.createElement('tr');
-    const key = row.id;
-    if (hitKeys.has(key)) tr.classList.add('is-hit');
-    if (added.has(key)) tr.classList.add('is-added');
-    if (moved.has(key)) tr.classList.add('is-moved');
+    const key = document.createElement('span');
+    key.className = 'choice-key';
+    key.textContent = String(index + 1);
 
-    for (const column of state.boot.columns) {
-      const td = document.createElement('td');
-      const value = row[column];
-      td.textContent = formatCell(value);
-      if (typeof value === 'number') td.className = 'num';
-      if (value === null) td.classList.add('is-null');
-      tr.append(td);
+    const label = document.createElement('span');
+    label.className = 'choice-label';
+    label.textContent = choice.label;
+
+    button.append(key, label);
+
+    if (answered) {
+      if (choice.id === reveal.correctId) button.classList.add('is-correct');
+      else if (choice.id === reveal.selectedId) button.classList.add('is-wrong');
+      else button.classList.add('is-dimmed');
     }
-    fragment.append(tr);
-  }
 
-  el.dataBody.replaceChildren(fragment);
+    button.addEventListener('click', () => submitAnswer(choice.id));
+    fragment.append(button);
+  });
+  el.choices.replaceChildren(fragment);
 }
 
-/**
- * 集計モードのとき、下に「集計前の行がどう畳まれたか」を出す。
- * 空いた領域を埋めるだけでなく、GROUP BY が何をしたのかを見せる。
- */
-function renderAggregateNote(result) {
-  const note = el.aggregateNote;
-  note.hidden = false;
-
-  const groups = result.rows.length;
-  const sumCount = result.rows.reduce((acc, row) => acc + (row['件数'] ?? 0), 0);
-  const sumSales = result.rows.reduce((acc, row) => acc + (row['売上'] ?? 0), 0);
-
-  note.innerHTML = `
-    <p class="agg-lead">
-      表示中の <strong>${groups}</strong> グループでは、件数の合計は
-      <strong>${sumCount.toLocaleString('ja-JP')}</strong>、
-      売上の合計は <strong>${sumSales.toLocaleString('ja-JP')}</strong>。
-    </p>
-    <p class="agg-hint">GROUP BY を外すと、この畳み込みが解けて元の行に戻ります。</p>
-  `;
-}
-
-function renderShelf(view) {
-  const placement = view.placement;
-  const active = new Set([
-    ...placement.where,
-    placement.groupBy,
-    placement.orderBy,
-    placement.limit,
-  ].filter(Boolean));
-
-  for (const button of el.shelf.children) {
-    const id = button.dataset.chipId;
-    button.setAttribute('aria-pressed', active.has(id) ? 'true' : 'false');
-    const chip = state.boot.chips.find((entry) => entry.id === id);
-    // 集計中の並び替えは売上合計／カテゴリの行数に対応する。
-    const label = placement.groupBy && id === 'o_sales' ? 'SUM(sales) DESC'
-      : placement.groupBy && id === 'o_count' ? 'COUNT(*) DESC' : chip.label;
-    button.querySelector('.chip-label').textContent = label;
+function renderReveal(view) {
+  const reveal = view.reveal;
+  if (view.phase !== 'revealed' || !reveal) {
+    el.reveal.hidden = true;
+    return;
   }
 
-  const playing = view.status === 'playing';
-  el.serve.disabled = !playing;
-  el.clear.disabled = !playing;
+  el.reveal.hidden = false;
+  el.reveal.classList.toggle('is-correct', reveal.outcome === 'correct');
+  el.reveal.classList.toggle('is-wrong', reveal.outcome !== 'correct');
+
+  if (reveal.outcome === 'correct') {
+    el.revealVerdict.textContent = `正解 +${reveal.gained.total}`;
+  } else if (reveal.outcome === 'timeout') {
+    el.revealVerdict.textContent = '時間切れ';
+  } else {
+    el.revealVerdict.textContent = '不正解';
+  }
+  el.revealExplanation.textContent = reveal.explanation;
 }
 
 function renderOverlay(view) {
@@ -237,48 +171,46 @@ function renderEvents(view, previous) {
   const event = view.lastEvent;
   if (event === previous.lastEvent) return;
 
-  if (event.type === 'served') {
+  if (event.type === 'answer' && event.outcome === 'correct') {
     floatText(`+${event.gained.total}`, 'good');
-    if (event.gained.multiplier > 1) {
-      floatText(`×${event.gained.multiplier.toFixed(2)}`, 'good', 34);
-    }
     shake();
-  } else if (event.type === 'miss') {
-    floatText(event.reason === 'invalid' ? '不正なクエリ' : '不一致', 'bad');
+  } else if (event.type === 'answer' || event.type === 'timeout') {
+    floatText(event.type === 'timeout' ? '時間切れ' : 'ミス', 'bad');
   }
 }
 
 /* ── 部品 ────────────────────────────────────────── */
 
-function buildHead(columns) {
-  const tr = document.createElement('tr');
+function buildTable(columns, rows, classOf) {
+  const table = document.createElement('table');
+  table.className = 'data-table';
+
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
   for (const column of columns) {
     const th = document.createElement('th');
     th.textContent = column;
-    tr.append(th);
+    headRow.append(th);
   }
-  return tr;
-}
+  thead.append(headRow);
+  table.append(thead);
 
-function buildTable(columns, rows, hitKeys, { compact = false } = {}) {
-  const table = document.createElement('table');
-  table.append(buildHead(columns));
   const tbody = document.createElement('tbody');
   for (const row of rows) {
     const tr = document.createElement('tr');
-    if (hitKeys?.has(row.id)) tr.classList.add('is-hit');
+    const extra = classOf(row);
+    if (extra) tr.className = extra;
     for (const column of columns) {
       const td = document.createElement('td');
       const value = row[column];
       td.textContent = formatCell(value);
       if (typeof value === 'number') td.className = 'num';
-      if (value === null) tr.classList.add('is-null');
+      if (value === null) td.classList.add('is-null');
       tr.append(td);
     }
     tbody.append(tr);
   }
   table.append(tbody);
-  if (compact) table.dataset.compact = 'true';
   return table;
 }
 
@@ -288,31 +220,18 @@ function formatCell(value) {
   return String(value);
 }
 
-/** SQLのキーワードと文字列だけ色を付ける（HTMLは必ずエスケープする） */
-function highlightSql(sql) {
-  const escaped = sql
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  return escaped
-    .replace(/('[^']*')/g, '<span class="str">$1</span>')
-    .replace(/\b(SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|AND|AS|COUNT|SUM|DESC)\b/g, '<span class="kw">$1</span>');
-}
-
-function floatText(text, kind, offset = 0) {
+function floatText(text, kind) {
   const node = document.createElement('div');
   node.className = `floater is-${kind}`;
   node.textContent = text;
   node.style.left = '50%';
-  node.style.top = `${38 + offset}%`;
+  node.style.top = '42%';
   el.floaters.append(node);
   setTimeout(() => node.remove(), 950);
 }
 
 function shake() {
   el.app.classList.remove('is-shake');
-  // リフローを挟んでアニメーションをやり直す
   void el.app.offsetWidth;
   el.app.classList.add('is-shake');
 }
@@ -331,27 +250,48 @@ function hideOverlay() {
 function startCard() {
   const card = document.createElement('div');
   card.innerHTML = `
-    <p class="overlay-eyebrow">60 SECOND SPRINT</p>
-    <h1 class="overlay-title">注文を、SQLで。<br />60秒で何皿捌けるか。</h1>
+    <p class="overlay-eyebrow">60 SECOND TIME ATTACK</p>
+    <h1 class="overlay-title">どの WHERE で、<br />こうなった？</h1>
     <p class="overlay-lead">
-      下段のチップを押すとクエリが組み上がり、中段のテーブルがその場で絞り込まれます。
-      上段の完成形と一致したら「提供する」。ミスするとコンボが切れます。
+      上に「絞り込み前」と「絞り込み後」のテーブルが出ます。
+      下の4択から、その変化を起こした WHERE を選んでください。
+      正誤と解説が出ている間はタイマーが止まります。
     </p>
     <ul class="rules">
-      <li>注文は常に1件。同時に2件は出ません</li>
-      <li>チップの並びは毎回同じ。探す時間はありません</li>
-      <li>ノーミスで繋ぐほどコンボ倍率が伸びます</li>
+      <li>問題は常に1問。同時に2問は出ません</li>
+      <li>4択の位置は毎回同じ。探す時間はありません</li>
+      <li>速く正解するほど点が高い。連続正解でさらに上乗せ</li>
     </ul>
+    <p class="overlay-lead" style="margin-bottom:8px">1問の制限時間</p>
+    <div class="limit-picker" id="limit-picker"></div>
     <div class="overlay-actions">
-      <button type="button" class="btn btn-serve" id="start-btn">はじめる</button>
+      <button type="button" class="btn btn-next" id="start-btn">はじめる</button>
     </div>
   `;
+
+  const picker = card.querySelector('#limit-picker');
+  for (const seconds of state.boot.config.questionSecondsOptions) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'limit-option';
+    button.textContent = `${seconds}秒`;
+    button.setAttribute('aria-pressed', String(seconds === state.questionSeconds));
+    button.addEventListener('click', () => {
+      state.questionSeconds = seconds;
+      for (const other of picker.children) {
+        other.setAttribute('aria-pressed', String(other === button));
+      }
+    });
+    picker.append(button);
+  }
+
   card.querySelector('#start-btn').addEventListener('click', startGame);
   return card;
 }
 
 function resultCard(view) {
   const card = document.createElement('div');
+  const accuracy = view.answered === 0 ? 0 : Math.round((view.correct / view.answered) * 100);
   card.innerHTML = `
     <p class="overlay-eyebrow">TIME UP</p>
     <h1 class="overlay-title">おあいそ。</h1>
@@ -360,30 +300,34 @@ function resultCard(view) {
       <span>点</span>
     </div>
     <dl class="breakdown">
-      <div><dt>捌いた注文</dt><dd>${view.served}</dd></div>
-      <div><dt>最大コンボ</dt><dd>${view.maxCombo}</dd></div>
+      <div><dt>正解</dt><dd>${view.correct}</dd></div>
       <div><dt>ミス</dt><dd>${view.misses}</dd></div>
+      <div><dt>最大ストリーク</dt><dd>${view.maxStreak}</dd></div>
+      <div><dt>正答率</dt><dd>${accuracy}%</dd></div>
     </dl>
-    <p class="overlay-lead">${verdict(view)}</p>
+    <p class="overlay-lead">${verdict(view, accuracy)}</p>
     <div class="overlay-actions">
-      <button type="button" class="btn btn-serve" id="retry-btn">もう一度</button>
+      <button type="button" class="btn btn-next" id="retry-btn">もう一度</button>
     </div>
   `;
   card.querySelector('#retry-btn').addEventListener('click', startGame);
   return card;
 }
 
-function verdict(view) {
-  if (view.misses === 0 && view.served >= 8) return 'ノーミスで駆け抜けました。読み切る速さがそのまま点になっています。';
-  if (view.misses === 0) return 'ノーミス。次はもっと速く、もっと多く。';
-  if (view.maxCombo >= 4) return 'コンボは伸びました。ミスを減らせば、まだ上があります。';
-  return 'まずはミスを減らすこと。速さは後からついてきます。';
+function verdict(view, accuracy) {
+  if (view.answered === 0) return 'まずは1問。見て選ぶだけなので、迷ったら押してみてください。';
+  if (accuracy >= 90 && view.maxStreak >= 8) return '見る速さがそのまま点になっています。この調子。';
+  if (accuracy >= 90) return '正確です。次はもっと速く。';
+  if (view.maxStreak >= 5) return '連続で取れています。ミスを減らせば、まだ上があります。';
+  if (accuracy >= 60) return '半分は取れています。境界（> と >=）と NULL の行に注目してみてください。';
+  return 'まずは正解を増やすこと。速さは後からついてきます。';
 }
 
 /* ── タイマー ────────────────────────────────────── */
 
 function startTimer(view) {
-  state.endsAt = performance.now() + view.remainingMs;
+  state.sessionEndsAt = performance.now() + view.remainingSessionMs;
+  state.questionEndsAt = performance.now() + view.remainingQuestionMs;
   cancelAnimationFrame(state.raf);
   tick();
 }
@@ -392,28 +336,54 @@ function tick() {
   const view = state.view;
   if (!view) return;
 
-  const remaining = view.status === 'playing' ? Math.max(0, state.endsAt - performance.now()) : view.remainingMs;
-  const ratio = Math.max(0, Math.min(1, remaining / view.sprintMs));
+  const playing = view.status === 'playing';
+  const sessionRemaining = playing
+    ? Math.max(0, state.sessionEndsAt - performance.now())
+    : view.remainingSessionMs;
+  const sessionRatio = Math.max(0, Math.min(1, sessionRemaining / view.sessionMs));
 
-  el.timerFill.style.width = `${ratio * 100}%`;
-  el.timerText.textContent = (remaining / 1000).toFixed(1);
-  el.timer.classList.toggle('is-urgent', remaining <= 10_000);
+  el.sessionFill.style.width = `${sessionRatio * 100}%`;
+  el.sessionText.textContent = (sessionRemaining / 1000).toFixed(1);
+  el.session.classList.toggle('is-urgent', sessionRemaining <= 10_000);
 
-  if (view.status === 'playing' && remaining <= 0) {
-    // 到着時の遅延や一時的な通信失敗でも、結果が確定するまで確認する。
-    api('/api/state').then((next) => {
-      render(next);
-      if (next.status === 'playing') {
-        state.endsAt = performance.now() + next.remainingMs;
-        setTimeout(tick, 250);
-      } else {
-        startTimer(next);
-      }
-    }).catch(() => setTimeout(tick, 1000));
+  // スコア減衰のライブ表示（いま正解したら何点か）
+  if (playing && view.phase === 'answering') {
+    const questionRemaining = Math.max(0, state.questionEndsAt - performance.now());
+    const ratio = Math.max(0, Math.min(1, questionRemaining / view.questionLimitMs));
+    const speed = Math.round(state.boot.config.speedBonusMax * ratio);
+    const streakBonus = Math.min(view.streak * state.boot.config.streakStep, state.boot.config.streakBonusMax);
+    const total = state.boot.config.basePoints + speed + streakBonus;
+    el.potentialValue.textContent = String(total);
+    el.potential.classList.toggle('is-low', ratio < 0.34);
+
+    if (questionRemaining <= 0) {
+      requestTick();
+      return;
+    }
+  }
+
+  if (playing && sessionRemaining <= 0) {
+    requestTick();
     return;
   }
 
-  if (view.status === 'playing') state.raf = requestAnimationFrame(tick);
+  if (playing) state.raf = requestAnimationFrame(tick);
+}
+
+/** 時間切れをサーバーに確定させる（失敗しても再試行する） */
+function requestTick() {
+  api('/api/tick')
+    .then((next) => {
+      render(next);
+      if (next.status === 'playing') {
+        state.sessionEndsAt = performance.now() + next.remainingSessionMs;
+        state.questionEndsAt = performance.now() + next.remainingQuestionMs;
+        setTimeout(tick, 60);
+      } else {
+        startTimer(next);
+      }
+    })
+    .catch(() => setTimeout(tick, 800));
 }
 
 /* ── 操作 ────────────────────────────────────────── */
@@ -421,22 +391,22 @@ function tick() {
 // 連続タップを捨てず、入力された順番でサーバーへ送る。
 function enqueueAction(path, body, { start = false } = {}) {
   state.actions = state.actions.then(async () => {
-    if (!start && state.view?.status !== 'playing') return;
     try {
       const view = await api(path, body);
       render(view);
-      if (start || view.status === 'over') startTimer(view);
+      if (start || view.status === 'over' || view.phase === 'answering') startTimer(view);
     } catch (error) {
       // 応答だけが失われた場合もあるので、再送せず現在の状態を取得する。
       try {
         const view = await api('/api/state');
         render(view);
         startTimer(view);
-        floatText('通信を再接続しました', 'bad');
       } catch {
-        showOverlay(Object.assign(document.createElement('p'), {
-          textContent: 'サーバーに接続できません。再起動してページを更新してください。',
-        }));
+        showOverlay(
+          Object.assign(document.createElement('p'), {
+            textContent: 'サーバーに接続できません。再起動してページを更新してください。',
+          }),
+        );
       }
       console.error(error);
     }
@@ -445,72 +415,45 @@ function enqueueAction(path, body, { start = false } = {}) {
 }
 
 function startGame() {
-  return enqueueAction('/api/start', {}, { start: true });
+  return enqueueAction('/api/start', { questionSeconds: state.questionSeconds }, { start: true });
 }
 
-function pressChip(chipId) {
-  if (state.view?.status !== 'playing') return;
-  return enqueueAction('/api/chip', { chipId });
+function submitAnswer(choiceId) {
+  if (state.view?.status !== 'playing' || state.view?.phase !== 'answering') return;
+  return enqueueAction('/api/answer', { choiceId });
 }
 
-function clearPlacement() {
-  if (state.view?.status !== 'playing') return;
-  return enqueueAction('/api/clear', {});
-}
-
-function serve() {
-  if (state.view?.status !== 'playing') return;
-  return enqueueAction('/api/serve', {});
+function goNext() {
+  if (state.view?.status !== 'playing' || state.view?.phase !== 'revealed') return;
+  return enqueueAction('/api/next', {});
 }
 
 /* ── 起動 ────────────────────────────────────────── */
 
-function buildShelf() {
-  const fragment = document.createDocumentFragment();
-  for (const id of state.boot.shelf) {
-    const chip = state.boot.chips.find((c) => c.id === id);
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'chip';
-    button.dataset.chipId = chip.id;
-    button.dataset.tone = chip.tone;
-    button.setAttribute('aria-pressed', 'false');
-    button.innerHTML = `<span class="chip-slot">${slotLabel(chip.slot)}</span><span class="chip-label"></span>`;
-    button.querySelector('.chip-label').textContent = chip.label;
-    button.addEventListener('click', () => pressChip(chip.id));
-    fragment.append(button);
-  }
-  el.shelf.replaceChildren(fragment);
-}
-
-function slotLabel(slot) {
-  return { where: 'WHERE', groupBy: 'GROUP BY', orderBy: 'ORDER BY', limit: 'LIMIT' }[slot] ?? slot;
-}
-
 async function boot() {
   state.boot = await api('/api/bootstrap');
-  state.boot.columns = state.boot.allRows.length > 0 ? Object.keys(state.boot.allRows[0]) : [];
-  buildShelf();
+  state.questionSeconds = state.boot.config.defaultQuestionSeconds;
 
-  el.clear.addEventListener('click', clearPlacement);
-  el.serve.addEventListener('click', serve);
+  el.nextBtn.addEventListener('click', goNext);
 
-  // キーボードでも遊べるようにする（1〜8でチップ、Enterで提供、Escでクリア）
+  // 数字キー1〜4で回答、Enterで次へ
   window.addEventListener('keydown', (event) => {
-    if (event.repeat || event.target.closest('button, input, textarea, select, a')) return;
+    if (event.repeat || event.target.closest('input, textarea, select')) return;
+
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (state.view?.status === 'playing') serve();
-      else startGame();
+      if (state.view?.status === 'playing' && state.view?.phase === 'revealed') goNext();
+      else if (state.view?.status !== 'playing') startGame();
       return;
     }
-    if (event.key === 'Escape') {
-      clearPlacement();
-      return;
-    }
+
     const index = Number(event.key) - 1;
-    if (Number.isInteger(index) && index >= 0 && index < state.boot.shelf.length) {
-      pressChip(state.boot.shelf[index]);
+    if (Number.isInteger(index) && index >= 0 && index < state.boot.config.choiceCount) {
+      const choice = state.view?.choices?.[index];
+      if (choice) {
+        event.preventDefault();
+        submitAnswer(choice.id);
+      }
     }
   });
 
@@ -521,7 +464,7 @@ async function boot() {
 boot().catch((error) => {
   console.error(error);
   showOverlay(
-    Object.assign(document.createElement('div'), {
+    Object.assign(document.createElement('p'), {
       textContent: `起動に失敗しました: ${error.message}`,
     }),
   );

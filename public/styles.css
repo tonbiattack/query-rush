@@ -1,10 +1,12 @@
 /*
- * QUERY RUSH — 寿司カウンター × SQLターミナル
+ * QUERY RUSH — 寿司カウンター × データの見た目
  *
  * 色は「すし屋の道具」から取っている。
- *   すみ（カウンターの影）／和紙（注文票）／まぐろ（ミス・強調）
- *   わさび（WHERE）／うめ（GROUP BY）／たまご（LIMIT）／のり（地）
- * 文字は3種類だけ。注文票は明朝（手書きの伝票）、UIはゴシック、SQLは等幅。
+ *   すみ（カウンターの影）／和紙（伝票）／まぐろ（不正解・強調）
+ *   わさび（残った行）／のり（地）
+ *
+ * 文字は3種類だけ。見出しは明朝、UIはゴシック、データは等幅。
+ * データは「読む」のではなく「見る」ものなので、行の増減を色で語らせる。
  */
 
 :root {
@@ -22,16 +24,15 @@
   --maguro-deep: #8f2b30;
   --wasabi: #93b34e;
   --wasabi-deep: #5f7a2c;
-  --plum: #a583b8;
   --ochre: #d3a24a;
   --shari: #e8e2d2;
 
   --font-ui: "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Yu Gothic", Meiryo, system-ui, sans-serif;
-  --font-ticket: "Hiragino Mincho ProN", "Yu Mincho", "MS PMincho", "Noto Serif JP", serif;
+  --font-display: "Hiragino Mincho ProN", "Yu Mincho", "MS PMincho", "Noto Serif JP", serif;
   --font-mono: "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
 
   --radius: 3px;
-  --band-gap: 10px;
+  --gap: 10px;
 }
 
 * {
@@ -60,10 +61,21 @@ body {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
-  max-width: 1180px;
+  max-width: 1080px;
   margin: 0 auto;
-  padding: 10px 14px 12px;
-  gap: var(--band-gap);
+  padding: 10px 16px 14px;
+  gap: var(--gap);
+}
+
+/* ステージは上寄せ。余白は下に逃がして、視線の起点を固定する */
+/* ステージは上寄せ。余白は下に逃がして、視線の起点を固定する */
+.stage {
+  display: grid;
+  grid-template-rows: auto auto auto auto;
+  align-content: start;
+  gap: var(--gap);
+  min-height: 0;
+  padding-top: 6px;
 }
 
 /* ── HUD ───────────────────────────────────────────── */
@@ -105,13 +117,13 @@ body {
   color: var(--washi-dim);
 }
 
-.timer {
+.session {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.timer-track {
+.session-track {
   position: relative;
   flex: 1;
   height: 6px;
@@ -120,7 +132,7 @@ body {
   overflow: hidden;
 }
 
-.timer-fill {
+.session-fill {
   position: absolute;
   inset: 0 auto 0 0;
   width: 100%;
@@ -129,11 +141,11 @@ body {
   transition: width 120ms linear, background 300ms ease;
 }
 
-.timer.is-urgent .timer-fill {
+.session.is-urgent .session-fill {
   background: linear-gradient(90deg, var(--ochre), var(--maguro));
 }
 
-.timer-text {
+.session-text {
   min-width: 46px;
   font-family: var(--font-mono);
   font-size: 15px;
@@ -142,7 +154,7 @@ body {
   color: var(--washi-dim);
 }
 
-.timer.is-urgent .timer-text {
+.session.is-urgent .session-text {
   color: var(--maguro);
 }
 
@@ -171,189 +183,23 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.stat-combo .stat-value {
+.stat-streak .stat-value {
   color: var(--ochre);
 }
 
-/* ── 3段の帯 ───────────────────────────────────────── */
+/* ── ステージ ──────────────────────────────────────── */
 
-.bands {
+/* ── 前後のテーブル ────────────────────────────────── */
+
+.tables {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: var(--band-gap);
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
   min-height: 0;
 }
 
-.band {
-  min-height: 0;
-}
-
-.band-top {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  align-items: stretch;
-  gap: var(--band-gap);
-}
-
-/* ── 注文票（和紙の伝票） ──────────────────────────── */
-
-.ticket {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-height: 132px;
-  padding: 14px 18px 16px;
-  border-radius: var(--radius);
-  background:
-    linear-gradient(180deg, #f6f1e5 0%, #e9e2d1 100%);
-  color: #23261c;
-  box-shadow: 0 1px 0 #ffffff26 inset, 0 6px 18px #0000004d;
-}
-
-/* 伝票の切り取り線 */
-.ticket::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 5px;
-  background-image: radial-gradient(circle at 4px 0, transparent 3px, #e9e2d1 3.5px);
-  background-size: 8px 5px;
-  background-repeat: repeat-x;
-  transform: translateY(4px);
-}
-
-.ticket-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-
-.ticket-no {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  color: #6d6a58;
-}
-
-.ticket-trap {
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  padding: 1px 7px;
-  border-radius: 99px;
-  background: #23261c12;
-  color: #5c5a4a;
-}
-
-.ticket-trap[data-level="2"] {
-  background: #d3a24a2e;
-  color: #7a5a15;
-}
-
-.ticket-trap[data-level="3"] {
-  background: #d2454b24;
-  color: #8f2b30;
-}
-
-.ticket-text {
-  margin: 0;
-  font-family: var(--font-ticket);
-  font-size: 21px;
-  font-weight: 600;
-  line-height: 1.45;
-  letter-spacing: 0.01em;
-  text-wrap: balance;
-}
-
-.ticket-hint {
-  margin: 7px 0 0;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: #6d6a58;
-}
-
-/* データ側の罠のヒント。注文票の余白に、その注文で気をつける点だけ出す */
-.ticket-trap-note {
-  margin: 9px 0 0;
-  padding: 7px 10px;
-  border-left: 2px solid #d3a24a;
-  background: #d3a24a1f;
-  font-size: 11.5px;
-  line-height: 1.55;
-  color: #6b5518;
-}
-
-.ticket-trap-note[hidden] {
-  display: none;
-}
-
-/* ── 完成形プレビュー ──────────────────────────────── */
-
-.target {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  max-height: 210px;
-  padding: 9px 12px 10px;
-  border: 1px solid #ffffff14;
-  border-radius: var(--radius);
-  background: #ffffff07;
-}
-
-.panel-title {
-  margin: 0 0 6px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  color: var(--washi-faint);
-}
-
-.target-body {
-  overflow: auto;
-  min-height: 0;
-  scrollbar-width: thin;
-}
-
-.target-body table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-}
-
-.target-body th {
-  position: sticky;
-  top: 0;
-  padding: 2px 6px;
-  background: #1b1f15;
-  color: var(--washi-faint);
-  font-weight: 500;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.target-body td {
-  padding: 2px 6px;
-  border-top: 1px solid #ffffff0a;
-  color: var(--shari);
-  white-space: nowrap;
-}
-
-.target-body td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.target-body tr.is-null td {
-  color: var(--washi-faint);
-  font-style: italic;
-}
-
-/* ── 中段：SQLバーとテーブル ───────────────────────── */
-
-.band-mid {
+.panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -363,52 +209,50 @@ body {
   overflow: hidden;
 }
 
-.sql-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 7px 12px;
+.panel-title {
+  margin: 0;
+  padding: 6px 12px;
   border-bottom: 1px solid #ffffff12;
   background: #ffffff06;
-}
-
-.sql {
-  flex: 1;
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  color: var(--wasabi);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.sql .kw {
-  color: var(--plum);
-  font-weight: 700;
-}
-
-.sql .str {
-  color: var(--ochre);
-}
-
-.sql-meta {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
   color: var(--washi-faint);
-  font-variant-numeric: tabular-nums;
 }
 
-.sql-meta.is-over {
-  color: var(--maguro);
+.panel-after .panel-title {
+  color: var(--wasabi);
 }
 
-.table-wrap {
-  flex: 1;
-  min-height: 0;
+.panel-body {
   overflow: auto;
   scrollbar-width: thin;
 }
+
+/* 矢印。絞り込みの向きを1つの記号で示す */
+.arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+}
+
+.arrow-line {
+  width: 12px;
+  height: 1px;
+  background: #ffffff2e;
+}
+
+.arrow-head {
+  width: 7px;
+  height: 7px;
+  border-top: 1px solid #ffffff2e;
+  border-right: 1px solid #ffffff2e;
+  transform: rotate(45deg);
+  margin-left: -4px;
+}
+
+/* ── データテーブル ────────────────────────────────── */
 
 .data-table {
   width: 100%;
@@ -421,7 +265,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 1;
-  padding: 5px 9px;
+  padding: 4px 9px;
   background: #1b1f15;
   border-bottom: 1px solid #ffffff1a;
   color: var(--washi-faint);
@@ -437,7 +281,7 @@ body {
   border-bottom: 1px solid #ffffff08;
   color: var(--washi-faint);
   white-space: nowrap;
-  transition: color 90ms linear, background-color 90ms linear;
+  transition: color 120ms linear, background-color 120ms linear;
 }
 
 .data-table td.num {
@@ -447,184 +291,216 @@ body {
 
 .data-table td.is-null {
   font-style: italic;
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
-/* 絞り込まれて残った行（ライブハイライト） */
-.data-table tbody tr.is-hit td {
+/* 絞り込み後に残った行（ハイライト） */
+.data-table tbody tr.is-kept td {
   color: var(--shari);
-  background: #93b34e14;
+  background: #93b34e1a;
 }
 
-.data-table tbody tr.is-hit td:first-child {
+.data-table tbody tr.is-kept td:first-child {
   box-shadow: inset 2px 0 0 var(--wasabi);
 }
 
-/* 直前の操作で増えた行・順位が変わった行 */
-.data-table tbody tr.is-added td {
-  animation: row-in 320ms ease-out;
+/* 絞り込み前のテーブルで「消える行」を薄く示す */
+.data-table tbody tr.is-removed td {
+  color: #6f6a5c;
+  text-decoration: line-through;
+  text-decoration-color: #ffffff26;
 }
 
-.data-table tbody tr.is-moved td {
-  animation: row-move 320ms ease-out;
+/* ── 問いかけとスコア減衰 ──────────────────────────── */
+
+.ask {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 2px;
 }
 
-@keyframes row-in {
-  0% {
-    background: #93b34e5c;
-  }
-  100% {
-    background: #93b34e14;
-  }
-}
-
-@keyframes row-move {
-  0% {
-    background: #d3a24a4d;
-  }
-  100% {
-    background: #93b34e14;
-  }
-}
-
-/* 集計モードのときは集計結果だけを出す */
-.data-table.is-aggregate tbody td {
-  color: var(--shari);
-}
-
-/* 集計で畳まれた内容の説明（空いた領域を情報で埋める） */
-.agg-note {
-  padding: 16px 14px;
-  border-top: 1px solid #ffffff0f;
-}
-
-.agg-note[hidden] {
-  display: none;
-}
-
-.agg-lead {
-  margin: 0 0 6px;
-  font-size: 13px;
-  line-height: 1.8;
-  color: var(--washi-dim);
-}
-
-.agg-lead strong {
-  font-family: var(--font-mono);
-  font-size: 15px;
-  color: var(--ochre);
-  font-variant-numeric: tabular-nums;
-}
-
-.agg-hint {
+.ask-text {
   margin: 0;
-  font-size: 11.5px;
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.potential {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid #ffffff1a;
+  border-radius: 99px;
+  background: #ffffff08;
+}
+
+.potential-label {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
   color: var(--washi-faint);
 }
 
-/* ── 下段：チップの棚 ──────────────────────────────── */
-
-.band-bottom {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: var(--band-gap);
+.potential-value {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ochre);
+  transition: color 120ms linear;
 }
 
-.shelf {
-  display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
-  gap: 6px;
+.potential-unit {
+  font-size: 10.5px;
+  color: var(--washi-faint);
 }
 
-/* チップは「まな板に並んだ木の札」。押すと浮く */
-.chip {
+.potential.is-low .potential-value {
+  color: var(--maguro);
+}
+
+/* ── 4択チップ ─────────────────────────────────────── */
+
+.choices {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.choice {
   position: relative;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
-  min-height: 54px;
-  padding: 7px 8px 7px 11px;
+  gap: 3px;
+  min-height: 78px;
+  padding: 12px 14px 12px 38px;
   border: 1px solid #ffffff1f;
   border-radius: var(--radius);
   background: linear-gradient(180deg, var(--counter-hi), var(--counter));
   color: var(--washi-dim);
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.3;
+  font-size: 14px;
+  line-height: 1.35;
   text-align: left;
   cursor: pointer;
   transition: transform 90ms ease, border-color 90ms ease, background-color 90ms ease;
   -webkit-tap-highlight-color: transparent;
 }
 
-.chip::before {
-  content: "";
+/* スロット番号。位置は固定で、ここが「探さない」ための手がかり */
+.choice-key {
   position: absolute;
-  inset: 6px auto 6px 0;
-  width: 3px;
-  border-radius: 0 2px 2px 0;
-  background: var(--chip-tone, var(--washi-faint));
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 2px;
+  background: #ffffff14;
+  color: var(--washi-faint);
+  font-size: 11px;
+  font-weight: 700;
 }
 
-.chip:hover {
+.choice:hover:not(:disabled) {
   border-color: #ffffff3d;
   transform: translateY(-2px);
 }
 
-.chip:active {
+.choice:active:not(:disabled) {
   transform: translateY(0);
 }
 
-.chip:focus-visible {
+.choice:focus-visible {
   outline: 2px solid var(--wasabi);
   outline-offset: 2px;
 }
 
-.chip[aria-pressed="true"] {
-  border-color: var(--chip-tone, var(--wasabi));
+.choice:disabled {
+  cursor: default;
+}
+
+/* 正解の選択肢 */
+.choice.is-correct {
+  border-color: var(--wasabi);
   background: linear-gradient(180deg, #3a4230, #2b3122);
   color: var(--washi);
-  box-shadow: 0 0 0 1px var(--chip-tone, var(--wasabi)) inset, 0 3px 10px #00000059;
+  box-shadow: 0 0 0 1px var(--wasabi) inset;
 }
 
-.chip-slot {
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  color: var(--washi-faint);
+.choice.is-correct .choice-key {
+  background: var(--wasabi);
+  color: #14170f;
 }
 
-.chip[aria-pressed="true"] .chip-slot {
-  color: var(--chip-tone, var(--wasabi));
+/* 選んだ不正解 */
+.choice.is-wrong {
+  border-color: var(--maguro);
+  background: linear-gradient(180deg, #3d2426, #2b1a1c);
+  color: var(--washi);
+  box-shadow: 0 0 0 1px var(--maguro) inset;
 }
 
-.chip-label {
-  font-size: 11px;
-  word-break: break-word;
+.choice.is-wrong .choice-key {
+  background: var(--maguro);
+  color: #fff;
 }
 
-.chip[data-tone="moss"] {
-  --chip-tone: var(--wasabi);
-}
-.chip[data-tone="plum"] {
-  --chip-tone: var(--plum);
-}
-.chip[data-tone="crimson"] {
-  --chip-tone: var(--maguro);
-}
-.chip[data-tone="ochre"] {
-  --chip-tone: var(--ochre);
+/* 正誤表示中に、選ばなかった選択肢を落とす */
+.choice.is-dimmed {
+  opacity: 0.4;
 }
 
-.actions {
-  display: flex;
-  gap: 8px;
+/* ── 正誤と解説 ────────────────────────────────────── */
+
+.reveal {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid #ffffff1a;
+  border-radius: var(--radius);
+  background: #ffffff08;
+}
+
+.reveal[hidden] {
+  display: none;
+}
+
+.reveal-verdict {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.reveal.is-correct .reveal-verdict {
+  color: var(--wasabi);
+}
+
+.reveal.is-wrong .reveal-verdict {
+  color: var(--maguro);
+}
+
+.reveal-explanation {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--washi-dim);
 }
 
 .btn {
   padding: 0 20px;
-  height: 54px;
+  height: 40px;
   border: 1px solid #ffffff1f;
   border-radius: var(--radius);
   font-family: var(--font-ui);
@@ -644,30 +520,16 @@ body {
   outline-offset: 2px;
 }
 
-.btn-ghost {
-  background: transparent;
-  color: var(--washi-dim);
-}
-
-.btn-ghost:hover {
-  background: #ffffff0f;
-}
-
-.btn-serve {
-  min-width: 132px;
+.btn-next {
+  min-width: 96px;
   border-color: #ffffff2e;
   background: linear-gradient(180deg, #b83f45, var(--maguro-deep));
   color: #fff;
   letter-spacing: 0.04em;
 }
 
-.btn-serve:hover {
+.btn-next:hover {
   filter: brightness(1.1);
-}
-
-.btn-serve:disabled {
-  filter: grayscale(0.7) brightness(0.7);
-  cursor: default;
 }
 
 /* ── 演出 ─────────────────────────────────────────── */
@@ -716,7 +578,7 @@ body {
   }
 }
 
-/* 提供成功時に画面を短く揺らす（判定は動かさず見た目だけ） */
+/* 正解時に画面を短く揺らす（判定は動かさず見た目だけ） */
 .app.is-shake {
   animation: shake 220ms ease-out;
 }
@@ -773,7 +635,7 @@ body {
 
 .overlay-title {
   margin: 0 0 10px;
-  font-family: var(--font-ticket);
+  font-family: var(--font-display);
   font-size: 30px;
   font-weight: 600;
   line-height: 1.25;
@@ -809,7 +671,7 @@ body {
 
 .breakdown {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 1px;
   margin: 0 0 20px;
   border: 1px solid #ffffff14;
@@ -862,19 +724,58 @@ body {
   flex: 1;
 }
 
+/* 制限時間の選択 */
+.limit-picker {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 20px;
+}
+
+.limit-option {
+  flex: 1;
+  height: 44px;
+  border: 1px solid #ffffff1f;
+  border-radius: var(--radius);
+  background: #ffffff08;
+  color: var(--washi-dim);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 90ms ease, background-color 90ms ease;
+}
+
+.limit-option:hover {
+  border-color: #ffffff3d;
+}
+
+.limit-option[aria-pressed="true"] {
+  border-color: var(--wasabi);
+  background: #93b34e1f;
+  color: var(--washi);
+  box-shadow: 0 0 0 1px var(--wasabi) inset;
+}
+
+.limit-option:focus-visible {
+  outline: 2px solid var(--wasabi);
+  outline-offset: 2px;
+}
+
 /* ── 狭い画面 ─────────────────────────────────────── */
 
-@media (max-width: 900px) {
+@media (max-width: 860px) {
   body {
-    font-size: 14px;
+    overflow: auto;
   }
 
   .app {
-    padding: 8px 10px 10px;
+    height: auto;
+    min-height: 100%;
+    padding: 8px 10px 12px;
   }
 
   .hud {
-    grid-template-columns: auto minmax(80px, 1fr) auto;
+    grid-template-columns: auto minmax(70px, 1fr) auto;
     gap: 10px;
   }
 
@@ -882,51 +783,55 @@ body {
     display: none;
   }
 
-  body {
-    overflow: auto;
+  .stage {
+    grid-template-rows: auto auto auto auto;
   }
 
-  .app {
-    min-height: 100%;
-    height: auto;
-  }
-
-  .bands {
-    grid-template-rows: auto minmax(240px, 1fr) auto;
-  }
-
-  .band-top {
+  .tables {
     grid-template-columns: 1fr;
+    gap: 6px;
   }
 
-  .ticket-text {
-    font-size: 18px;
+  .arrow {
+    width: 100%;
+    height: 16px;
+    transform: rotate(90deg);
   }
 
-  .shelf {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+  .panel-body {
+    max-height: 34vh;
   }
 
-  .band-bottom {
+  .ask-text {
+    font-size: 16px;
+  }
+
+  .choices {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .reveal {
     grid-template-columns: 1fr;
+    gap: 8px;
   }
 
-  .actions .btn {
-    flex: 1;
+  .reveal .btn-next {
+    width: 100%;
+  }
+
+  .breakdown {
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
-@media (max-height: 720px) {
-  .ticket-text {
-    font-size: 18px;
+@media (max-height: 700px) and (min-width: 861px) {
+  .choice {
+    min-height: 54px;
+    font-size: 12px;
   }
 
-  .chip {
-    min-height: 46px;
-  }
-
-  .btn {
-    height: 46px;
+  .ask-text {
+    font-size: 17px;
   }
 }
 

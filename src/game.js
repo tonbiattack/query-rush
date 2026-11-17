@@ -1,44 +1,49 @@
 /**
  * コアループ（Issue #3）。
  *
- *  - 注文は常時1件だけ提示する
- *  - 結果が完成形と完全一致したときだけ「提供」でき、次の注文へ進む
- *  - 不一致・不正な組み合わせはミスでコンボがリセットされる
- *  - 60秒タイマーで時間切れになるとスコアが確定する
- *  - スコア＝基本点 × コンボ倍率 ＋ 残り時間ボーナス
+ * 出題 → 4択回答 → タイマー停止で1行解説 → 次へ、を60秒続ける。
+ *
+ *  - 問題は常時1問だけ
+ *  - 制限時間は1問5秒が既定（3／5／8秒から選べる）
+ *  - 正誤表示中はタイマーが止まる。解説は1行だけ
+ *  - 正解でも不正解でも「次へ」で進む。ミスでゲームは止まらない
+ *  - スコア＝基本100＋速度ボーナス0〜100＋ストリークボーナス0〜100（最大300／問）
+ *  - 不正解・時間切れは0点でストリークがリセットされる（進行は止めない）
  */
 import { CONFIG } from './config.js';
-import { ORDERS } from './orders.js';
-import { CHIP_BY_ID, emptyPlacement, normalizePlacement } from './chips.js';
 
-/** コンボ倍率。ミスせず捌くほど伸びる（速さより正確さが伸びる配分） */
-export function comboMultiplier(combo) {
-  return Math.min(1 + CONFIG.comboStep * combo, CONFIG.comboMaxMultiplier);
+/** 速度ボーナス。残り時間の割合に比例して0〜speedBonusMax */
+export function speedBonus(remainingMs, limitMs) {
+  if (!Number.isFinite(limitMs) || limitMs <= 0) return 0;
+  if (!Number.isFinite(remainingMs)) return 0;
+  const ratio = Math.min(Math.max(remainingMs / limitMs, 0), 1);
+  return Math.round(CONFIG.speedBonusMax * ratio);
 }
 
-/** 1件提供したときの得点内訳 */
-export function scoreForServe({ combo, elapsedSeconds }) {
-  const multiplier = comboMultiplier(combo);
-  const base = Math.round(CONFIG.basePoints * multiplier);
-  const timeBonus = Math.max(
-    0,
-    Math.round((CONFIG.timeBonusWindowSeconds - elapsedSeconds) * CONFIG.timeBonusPerSecond),
-  );
-  return { base, multiplier, timeBonus, total: base + timeBonus };
+/** ストリークボーナス。直前までの連続正解数に応じて0〜streakBonusMax */
+export function streakBonus(streakBefore) {
+  if (!Number.isFinite(streakBefore)) return 0;
+  const streak = Math.max(0, Math.floor(streakBefore));
+  return Math.min(streak * CONFIG.streakStep, CONFIG.streakBonusMax);
 }
 
-/** 列・行・順序・値を含む完全一致。注文検証でも同じ判定を使う。 */
-export function resultsMatch(result, target) {
-  if (result.error || result.overBudget || result.truncated || target.error || target.overBudget || target.truncated) return false;
-  if (result.columns.length !== target.columns.length ||
-      result.columns.some((column, index) => column !== target.columns[index])) return false;
-  return result.rows.length === target.rows.length && result.rows.every((row, index) =>
-    result.columns.every((column) => row[column] === target.rows[index][column]));
+/** 1問ぶんの得点内訳。正解以外はすべて0点 */
+export function scoreForAnswer({ outcome, remainingMs, limitMs, streakBefore }) {
+  if (outcome !== 'correct') return { base: 0, speed: 0, streak: 0, total: 0 };
+  const base = CONFIG.basePoints;
+  const speed = speedBonus(remainingMs, limitMs);
+  const streak = streakBonus(streakBefore);
+  return { base, speed, streak, total: base + speed + streak };
 }
 
-/** 注文の並びを作る。直前と同じ注文が続かないようにする */
-function buildQueue(rng) {
-  const pool = [...ORDERS];
+/** いま答えたら何点になるかの見込み（出題中のライブ表示に使う） */
+export function potentialScore(remainingMs, limitMs, streak) {
+  return scoreForAnswer({ outcome: 'correct', remainingMs, limitMs, streakBefore: streak });
+}
+
+/** 問題の並びを作る。同じ問題が続かないようにシャッフルする */
+function shuffle(items, rng) {
+  const pool = [...items];
   for (let i = pool.length - 1; i > 0; i -= 1) {
     const j = Math.floor(rng() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -46,234 +51,233 @@ function buildQueue(rng) {
   return pool;
 }
 
-export function createGame({ engine, config = CONFIG, rng = Math.random, now = () => Date.now() }) {
-  const allRows = engine.allRows();
-  const targetCache = new Map();
+/** 選択肢の並びをシャッフルする（正解位置は固定しない） */
+function buildChoices(question, rng) {
+  const choices = shuffle([question.correct, ...question.distractors], rng);
+  return choices.map((candidate) => ({ id: candidate.id, label: candidate.label }));
+}
 
-  /** 完成形は必ずエンジンで実行して作る（注文票の文面と結果がずれない） */
-  function targetFor(order) {
-    if (!targetCache.has(order.id)) {
-      const result = engine.run(order.answer);
-      if (result.error || result.overBudget || result.truncated) {
-        throw new Error(`注文 ${order.id} の完成形を取得できません`);
-      }
-      targetCache.set(order.id, {
-        columns: result.columns,
-        rows: result.rows,
-        sql: result.sql,
-        displayColumns: displayColumnsFor(order, result),
-      });
-    }
-    return targetCache.get(order.id);
-  }
-
-  /**
-   * 完成形プレビューに出す列。
-   * 全列を出すと横に溢れて読みにくいので、判定に効く列だけに絞る。
-   *  - 集計: category / 件数 / 売上
-   *  - 通常: item ＋ 並び替えに使った列
-   */
-  function displayColumnsFor(order, result) {
-    if (result.key === 'category') return result.columns;
-    const columns = ['item'];
-    const orderBy = order.answer.orderBy;
-    if (orderBy) {
-      const column = CHIP_BY_ID.get(orderBy).sql.split(/\s+/)[0];
-      if (result.columns.includes(column)) columns.push(column);
-    }
-    return columns;
+export function createGame({
+  bank,
+  config = CONFIG,
+  rng = Math.random,
+  now = () => Date.now(),
+  questionSeconds = CONFIG.defaultQuestionSeconds,
+}) {
+  if (!Array.isArray(bank) || bank.length === 0) {
+    throw new Error('問題データが空です');
   }
 
   const state = {
     status: 'idle',
     score: 0,
-    combo: 0,
-    maxCombo: 0,
+    correct: 0,
     misses: 0,
-    served: 0,
+    streak: 0,
+    maxStreak: 0,
+    answered: 0,
     startedAt: 0,
     endsAt: 0,
-    orderIndex: 0,
-    orderStartedAt: 0,
+    /** 現在の問題 */
+    question: null,
+    choices: [],
+    /** 現在の問題の締切（performance.now相当） */
+    questionDeadline: 0,
+    questionLimitMs: questionSeconds * 1000,
+    /** answering / revealed / over */
+    phase: 'answering',
+    /** 直前の回答結果（revealed中だけ入る） */
+    reveal: null,
+    /** 出題済みの問題ID（尽きたら先頭へ戻る） */
     queue: [],
-    placement: emptyPlacement(),
-    result: null,
+    queueIndex: 0,
     lastEvent: null,
   };
 
-  function currentOrder() {
-    return state.queue[state.orderIndex % state.queue.length];
+  function questionLimitMs() {
+    return state.questionLimitMs;
   }
 
-  function remainingMs() {
-    if (state.status === 'idle') return config.sprintSeconds * 1000;
+  function remainingQuestionMs() {
+    if (state.phase !== 'answering') return 0;
+    return Math.max(0, state.questionDeadline - now());
+  }
+
+  function remainingSessionMs() {
+    if (state.status === 'idle') return config.timeAttackSeconds * 1000;
     return Math.max(0, state.endsAt - now());
   }
 
+  /** 次の問題を取り出す。尽きたら先頭へ戻る（タイムアタックは60秒続ける） */
+  function nextQuestion() {
+    if (state.queueIndex >= state.queue.length) {
+      state.queue = shuffle(bank, rng);
+      state.queueIndex = 0;
+    }
+    const question = state.queue[state.queueIndex];
+    state.queueIndex += 1;
+    state.question = question;
+    state.choices = buildChoices(question, rng);
+    state.questionDeadline = now() + state.questionLimitMs;
+    state.phase = 'answering';
+    state.reveal = null;
+    return question;
+  }
+
+  function finish() {
+    state.status = 'over';
+    state.phase = 'over';
+    state.lastEvent = { type: 'finish' };
+  }
+
+  /** セッション全体の時間切れを反映する */
   function expireIfNeeded() {
     if (state.status === 'playing' && now() >= state.endsAt) {
-      state.status = 'over';
-      state.lastEvent = { type: 'timeup' };
+      finish();
       return true;
     }
     return false;
   }
 
-  /** 現在の配置でクエリを実行し、state.result を更新する */
-  function refresh() {
-    // 行と集計グループは別のキー空間なので、切り替え時は差分をリセットする。
-    const nextKey = state.placement.groupBy ? 'category' : 'id';
-    const prevRows = state.result?.key === nextKey ? state.result.rows : [];
-    state.result = engine.run(state.placement, prevRows);
-    return state.result;
-  }
-
   function start() {
     state.status = 'playing';
     state.score = 0;
-    state.combo = 0;
-    state.maxCombo = 0;
+    state.correct = 0;
     state.misses = 0;
-    state.served = 0;
+    state.streak = 0;
+    state.maxStreak = 0;
+    state.answered = 0;
     state.startedAt = now();
-    state.endsAt = state.startedAt + config.sprintSeconds * 1000;
-    state.orderIndex = 0;
-    state.orderStartedAt = state.startedAt;
-    state.queue = buildQueue(rng);
-    state.placement = emptyPlacement();
-    state.result = null;
+    state.endsAt = state.startedAt + config.timeAttackSeconds * 1000;
+    state.questionLimitMs = questionSeconds * 1000;
+    state.queue = shuffle(bank, rng);
+    state.queueIndex = 0;
     state.lastEvent = { type: 'start' };
-    refresh();
+    nextQuestion();
     return view();
   }
 
-  /** チップを置く／外す。同じチップをもう一度押すと外れる */
-  function toggleChip(chipId) {
-    if (state.status !== 'playing') return view();
+  /**
+   * 回答する。正解でも不正解でも止まらず、正誤表示（revealed）へ移る。
+   * 締切を過ぎていたら時間切れとして扱う。
+   */
+  function answer(choiceId) {
+    if (state.status !== 'playing' || state.phase !== 'answering') return view();
     if (expireIfNeeded()) return view();
 
-    const p = normalizePlacement(state.placement);
-    const chip = CHIP_BY_ID.get(chipId);
-    if (!chip) {
-      state.combo = 0;
-      state.misses += 1;
-      state.lastEvent = { type: 'miss', reason: 'invalid', message: '不明なチップです' };
-      return view();
-    }
-    if (p.where.includes(chipId)) {
-      p.where = p.where.filter((id) => id !== chipId);
-    } else if (p.groupBy === chipId) {
-      p.groupBy = null;
-    } else if (p.orderBy === chipId) {
-      p.orderBy = null;
-    } else if (p.limit === chipId) {
-      p.limit = null;
+    const question = state.question;
+    const remainingMs = remainingQuestionMs();
+
+    // 締切を過ぎてからの入力は時間切れ（回答とタイマーの競合で二重集計しない）
+    if (remainingMs <= 0) return timeout();
+
+    const isCorrect = choiceId === question.correct.id;
+    const outcome = isCorrect ? 'correct' : 'incorrect';
+    const gained = scoreForAnswer({
+      outcome,
+      remainingMs,
+      limitMs: state.questionLimitMs,
+      streakBefore: state.streak,
+    });
+
+    state.score += gained.total;
+    state.answered += 1;
+    if (isCorrect) {
+      state.correct += 1;
+      state.streak += 1;
+      state.maxStreak = Math.max(state.maxStreak, state.streak);
     } else {
-      // スロットごとの定員は1枚（WHEREだけ複数可）
-      if (chip.slot === 'where') p.where.push(chipId);
-      else p[chip.slot] = chipId;
-    }
-
-    state.placement = normalizePlacement(p);
-    state.lastEvent = { type: 'place', chipId };
-    refresh();
-    return view();
-  }
-
-  /** 配置を空に戻す */
-  function clearPlacement() {
-    if (state.status !== 'playing' || expireIfNeeded()) return view();
-    state.placement = emptyPlacement();
-    state.lastEvent = { type: 'clear' };
-    refresh();
-    return view();
-  }
-
-  /** 提供判定。結果が完成形と完全一致したときだけ通る */
-  function serve() {
-    if (state.status !== 'playing') return view();
-    if (expireIfNeeded()) return view();
-
-    const order = currentOrder();
-    const target = targetFor(order);
-    const result = state.result ?? refresh();
-
-    const matched = resultsMatch(result, target);
-    const elapsedSeconds = (now() - state.orderStartedAt) / 1000;
-
-    if (matched) {
-      const gained = scoreForServe({ combo: state.combo, elapsedSeconds });
-      state.score += gained.total;
-      state.combo += 1;
-      state.maxCombo = Math.max(state.maxCombo, state.combo);
-      state.served += 1;
-      state.lastEvent = { type: 'served', gained, orderId: order.id };
-
-      state.orderIndex += 1;
-      state.orderStartedAt = now();
-      state.placement = emptyPlacement();
-      state.result = null;
-      refresh();
-    } else {
-      state.combo = 0;
       state.misses += 1;
-      state.lastEvent = {
-        type: 'miss',
-        reason: result.error ? 'invalid' : 'mismatch',
-        message: result.error ?? null,
-      };
+      state.streak = 0;
     }
+
+    state.phase = 'revealed';
+    state.reveal = {
+      outcome,
+      selectedId: choiceId,
+      correctId: question.correct.id,
+      gained,
+      explanation: question.explanation,
+    };
+    state.lastEvent = { type: 'answer', outcome, gained };
 
     expireIfNeeded();
+    return view();
+  }
+
+  /** 時間切れ。0点でストリークがリセットされる */
+  function timeout() {
+    if (state.status !== 'playing' || state.phase !== 'answering') return view();
+    const question = state.question;
+    state.answered += 1;
+    state.misses += 1;
+    state.streak = 0;
+    state.phase = 'revealed';
+    state.reveal = {
+      outcome: 'timeout',
+      selectedId: null,
+      correctId: question.correct.id,
+      gained: { base: 0, speed: 0, streak: 0, total: 0 },
+      explanation: question.explanation,
+    };
+    state.lastEvent = { type: 'timeout' };
+    expireIfNeeded();
+    return view();
+  }
+
+  /** 次の問題へ。正誤表示中だけ受け付ける */
+  function next() {
+    if (state.status !== 'playing' || state.phase !== 'revealed') return view();
+    if (expireIfNeeded()) return view();
+    nextQuestion();
+    return view();
+  }
+
+  /** 経過時間を反映する（時間切れ判定と自動進行） */
+  function tick() {
+    if (state.status !== 'playing') return view();
+    if (expireIfNeeded()) return view();
+    if (state.phase === 'answering' && remainingQuestionMs() <= 0) return timeout();
     return view();
   }
 
   /** クライアントへ返すスナップショット */
   function view() {
     expireIfNeeded();
-    const order = state.queue.length > 0 ? currentOrder() : ORDERS[0];
-    const target = targetFor(order);
+    const question = state.question;
+    const limitMs = state.questionLimitMs;
+    const remainingMs = remainingQuestionMs();
 
     return {
       status: state.status,
-      remainingMs: remainingMs(),
-      sprintMs: config.sprintSeconds * 1000,
+      phase: state.phase,
       score: state.score,
-      combo: state.combo,
-      maxCombo: state.maxCombo,
+      correct: state.correct,
       misses: state.misses,
-      served: state.served,
-      comboMultiplier: comboMultiplier(state.combo),
-      order: {
-        id: order.id,
-        ticket: order.ticket,
-        difficulty: order.difficulty,
-        hint: order.hint ?? null,
-        trap: order.trap ?? null,
-        target: {
-          columns: target.displayColumns,
-          rows: target.rows,
-          allColumns: target.columns,
-        },
-      },
-      placement: state.placement,
-      sql: state.result?.sql ?? '',
-      result: state.result
+      streak: state.streak,
+      maxStreak: state.maxStreak,
+      answered: state.answered,
+      remainingSessionMs: remainingSessionMs(),
+      sessionMs: config.timeAttackSeconds * 1000,
+      questionLimitMs: limitMs,
+      remainingQuestionMs: remainingMs,
+      /** いま正解したら何点か（スコア減衰のライブ表示） */
+      potential: potentialScore(remainingMs, limitMs, state.streak),
+      question: question
         ? {
-            columns: state.result.columns,
-            rows: state.result.rows,
-            key: state.result.key,
-            diff: state.result.diff,
-            highlight: state.result.highlight,
-            error: state.result.error,
-            overBudget: state.result.overBudget,
-            truncated: state.result.truncated,
-            durationMs: state.result.durationMs,
+            id: question.id,
+            title: question.title,
+            columns: question.columns,
+            before: question.before,
+            after: question.after,
+            diff: question.diff,
           }
         : null,
+      choices: state.choices,
+      reveal: state.reveal,
       lastEvent: state.lastEvent,
     };
   }
 
-  return { start, toggleChip, clearPlacement, serve, view, allRows, currentOrder };
+  return { start, answer, next, tick, view, timeout };
 }

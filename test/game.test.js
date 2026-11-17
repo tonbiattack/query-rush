@@ -3,19 +3,27 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createDatabase, openEngine } from '../src/engine.js';
-import { comboMultiplier, createGame, scoreForServe } from '../src/game.js';
 import { CONFIG } from '../src/config.js';
-import { ORDERS } from '../src/orders.js';
+import { createDatabase, openEngine } from '../src/engine.js';
+import { buildQuestionBank } from '../src/questions.js';
+import {
+  createGame,
+  potentialScore,
+  scoreForAnswer,
+  speedBonus,
+  streakBonus,
+} from '../src/game.js';
 
 let dir;
 let engine;
+let bank;
 
 before(() => {
   dir = mkdtempSync(join(tmpdir(), 'query-rush-game-'));
-  const dbPath = join(dir, 'game.db');
+  const dbPath = join(dir, 'test.db');
   createDatabase(dbPath);
   engine = openEngine(dbPath);
+  bank = buildQuestionBank(engine);
 });
 
 after(() => {
@@ -24,218 +32,264 @@ after(() => {
 });
 
 /** 時計を手で進められるゲームを作る */
-function makeGame({ seed = 1 } = {}) {
+function makeGame({ seed = 1, questionSeconds = 5 } = {}) {
   let clock = 1_000_000;
   let s = seed;
   const rng = () => {
     s = (s * 1664525 + 1013904223) % 4294967296;
     return s / 4294967296;
   };
-  const game = createGame({ engine, rng, now: () => clock });
+  const game = createGame({ bank, rng, now: () => clock, questionSeconds });
   return {
     game,
     advance: (ms) => {
       clock += ms;
     },
-    now: () => clock,
   };
 }
 
-/** 現在の注文の答えを配置する */
-function solveCurrent(game) {
-  const order = game.currentOrder();
-  for (const id of order.answer.where) game.toggleChip(id);
-  if (order.answer.groupBy) game.toggleChip(order.answer.groupBy);
-  if (order.answer.orderBy) game.toggleChip(order.answer.orderBy);
-  if (order.answer.limit) game.toggleChip(order.answer.limit);
-  return order;
-}
+describe('speedBonus', () => {
+  test('残り時間の割合に比例する', () => {
+    assert.equal(speedBonus(5000, 5000), CONFIG.speedBonusMax);
+    assert.equal(speedBonus(0, 5000), 0);
+    assert.equal(speedBonus(2500, 5000), CONFIG.speedBonusMax / 2);
+  });
 
-describe('comboMultiplier', () => {
-  test('コンボ0は等倍、伸びて上限で頭打ち', () => {
-    assert.equal(comboMultiplier(0), 1);
-    assert.equal(comboMultiplier(1), 1 + CONFIG.comboStep);
-    assert.equal(comboMultiplier(1000), CONFIG.comboMaxMultiplier);
+  test('壊れた値でも落ちない', () => {
+    assert.equal(speedBonus(Number.NaN, 5000), 0);
+    assert.equal(speedBonus(1000, 0), 0);
+    assert.equal(speedBonus(-100, 5000), 0);
+    assert.equal(speedBonus(9999, 5000), CONFIG.speedBonusMax);
   });
 });
 
-describe('scoreForServe', () => {
-  test('速いほど時間ボーナスが乗る', () => {
-    const fast = scoreForServe({ combo: 0, elapsedSeconds: 1 });
-    const slow = scoreForServe({ combo: 0, elapsedSeconds: 7 });
-    assert.ok(fast.timeBonus > slow.timeBonus);
+describe('streakBonus', () => {
+  test('連続正解で増えて上限で頭打ち', () => {
+    assert.equal(streakBonus(0), 0);
+    assert.equal(streakBonus(1), CONFIG.streakStep);
+    assert.equal(streakBonus(1000), CONFIG.streakBonusMax);
+  });
+});
+
+describe('scoreForAnswer', () => {
+  test('正解は基本＋速度＋ストリーク', () => {
+    const score = scoreForAnswer({
+      outcome: 'correct',
+      remainingMs: 5000,
+      limitMs: 5000,
+      streakBefore: 2,
+    });
+    assert.equal(score.base, CONFIG.basePoints);
+    assert.equal(score.speed, CONFIG.speedBonusMax);
+    assert.equal(score.streak, CONFIG.streakStep * 2);
+    assert.equal(score.total, CONFIG.basePoints + CONFIG.speedBonusMax + CONFIG.streakStep * 2);
+  });
+
+  test('1問の最大は300点', () => {
+    const max = scoreForAnswer({
+      outcome: 'correct',
+      remainingMs: 5000,
+      limitMs: 5000,
+      streakBefore: 100,
+    });
+    assert.equal(max.total, 300);
+  });
+
+  test('不正解・時間切れは0点', () => {
+    for (const outcome of ['incorrect', 'timeout']) {
+      const score = scoreForAnswer({ outcome, remainingMs: 5000, limitMs: 5000, streakBefore: 9 });
+      assert.equal(score.total, 0);
+    }
+  });
+
+  test('速いほど高い（スコア減衰）', () => {
+    const fast = potentialScore(5000, 5000, 0);
+    const slow = potentialScore(1000, 5000, 0);
     assert.ok(fast.total > slow.total);
-  });
-
-  test('窓を超えると時間ボーナスは0', () => {
-    assert.equal(scoreForServe({ combo: 0, elapsedSeconds: 30 }).timeBonus, 0);
-  });
-
-  test('ノーミスで捌く方が速さより伸びる', () => {
-    // コンボ5でゆっくり1件 vs コンボ0で最速1件
-    const comboed = scoreForServe({ combo: 5, elapsedSeconds: 7 });
-    const fastNoCombo = scoreForServe({ combo: 0, elapsedSeconds: 0 });
-    assert.ok(comboed.total > fastNoCombo.total);
   });
 });
 
 describe('createGame', () => {
-  test('開始直後はplayingで注文が1件だけ提示される', () => {
+  test('開始直後はplayingで問題が1問だけ提示される', () => {
     const { game } = makeGame();
     const view = game.start();
     assert.equal(view.status, 'playing');
-    assert.ok(view.order.id);
-    assert.ok(view.order.ticket.length > 0);
-    assert.ok(view.order.target.rows.length > 0);
-    assert.equal(view.remainingMs, CONFIG.sprintSeconds * 1000);
+    assert.equal(view.phase, 'answering');
+    assert.ok(view.question.id);
+    assert.equal(view.choices.length, CONFIG.choiceCount);
+    assert.equal(view.remainingSessionMs, CONFIG.timeAttackSeconds * 1000);
+    assert.equal(view.remainingQuestionMs, 5000);
   });
 
-  test('チップを置くたびに結果が即時反映される', () => {
+  test('選択肢には正解がちょうど1つ含まれる', () => {
     const { game } = makeGame();
-    game.start();
-    const before = game.view();
-    assert.equal(before.result.rows.length, engine.allRows().length);
-
-    const after = game.toggleChip('w_returned');
-    assert.ok(after.result.rows.length < before.result.rows.length);
-    assert.ok(after.sql.includes("status != 'returned'"));
+    const view = game.start();
+    const question = bank.find((q) => q.id === view.question.id);
+    const correctChoices = view.choices.filter((choice) => choice.id === question.correct.id);
+    assert.equal(correctChoices.length, 1);
   });
 
-  test('同じチップをもう一度押すと外れる', () => {
+  test('正解すると得点が入り、ストリークが伸びる', () => {
     const { game } = makeGame();
-    game.start();
-    game.toggleChip('w_returned');
-    const off = game.toggleChip('w_returned');
-    assert.deepEqual(off.placement.where, []);
+    const view = game.start();
+    const question = bank.find((q) => q.id === view.question.id);
+
+    const answered = game.answer(question.correct.id);
+    assert.equal(answered.phase, 'revealed');
+    assert.equal(answered.reveal.outcome, 'correct');
+    assert.ok(answered.score > 0);
+    assert.equal(answered.streak, 1);
+    assert.equal(answered.correct, 1);
+    assert.equal(answered.misses, 0);
   });
 
-  test('同じスロットのチップは1枚だけ（ORDER BYの差し替え）', () => {
+  test('不正解でも止まらず、0点でストリークが切れる', () => {
     const { game } = makeGame();
-    game.start();
-    game.toggleChip('o_sales');
-    const view = game.toggleChip('o_count');
-    assert.equal(view.placement.orderBy, 'o_count');
+    const view = game.start();
+    const question = bank.find((q) => q.id === view.question.id);
+    const wrong = view.choices.find((choice) => choice.id !== question.correct.id);
+
+    const answered = game.answer(wrong.id);
+    assert.equal(answered.phase, 'revealed');
+    assert.equal(answered.reveal.outcome, 'incorrect');
+    assert.equal(answered.score, 0);
+    assert.equal(answered.streak, 0);
+    assert.equal(answered.misses, 1);
+    // 進行は止まらない
+    assert.equal(answered.status, 'playing');
   });
 
-  test('不明なチップはミスになりコンボが切れる', () => {
+  test('正誤表示中はタイマーが止まる（残り時間が減らない）', () => {
+    const { game, advance } = makeGame();
+    const view = game.start();
+    const question = bank.find((q) => q.id === view.question.id);
+    game.answer(question.correct.id);
+
+    const before = game.view().remainingQuestionMs;
+    advance(3000);
+    const after = game.view().remainingQuestionMs;
+    assert.equal(after, before);
+    assert.equal(after, 0);
+  });
+
+  test('「次へ」で次の問題へ進み、制限時間が戻る', () => {
     const { game } = makeGame();
-    game.start();
-    solveCurrent(game);
-    game.serve();
-    const view = game.toggleChip('w_unknown');
-    assert.equal(view.lastEvent.reason, 'invalid');
-    assert.equal(view.combo, 0);
-    assert.equal(view.misses, 1);
+    const view = game.start();
+    const first = view.question.id;
+    const question = bank.find((q) => q.id === first);
+    game.answer(question.correct.id);
+
+    const next = game.next();
+    assert.equal(next.phase, 'answering');
+    assert.equal(next.remainingQuestionMs, 5000);
+    assert.equal(next.reveal, null);
   });
 
-  test('集計への切替時に異なるキーを差分へ混ぜない', () => {
+  test('正誤表示中でないと「次へ」は効かない', () => {
     const { game } = makeGame();
-    game.start();
-    const grouped = game.toggleChip('g_category');
-    assert.deepEqual(grouped.result.diff.removed, []);
-    assert.ok(grouped.result.diff.added.every((key) => typeof key === 'string'));
-    const normal = game.toggleChip('g_category');
-    assert.deepEqual(normal.result.diff.removed, []);
-    assert.ok(normal.result.diff.added.every((key) => typeof key === 'number'));
+    const view = game.start();
+    const before = view.question.id;
+    const after = game.next();
+    assert.equal(after.question.id, before);
   });
 
-  test('完成形と一致したときだけ提供でき、次の注文へ進む', () => {
-    const { game } = makeGame();
-    game.start();
-    const first = game.currentOrder();
-    solveCurrent(game);
-
-    const served = game.serve();
-    assert.equal(served.lastEvent.type, 'served');
-    assert.equal(served.served, 1);
-    assert.equal(served.combo, 1);
-    assert.notEqual(served.order.id, first.id);
-    assert.deepEqual(served.placement.where, []);
-  });
-
-  test('不一致のまま確定するとミスでコンボが切れる', () => {
-    const { game } = makeGame();
-    game.start();
-    solveCurrent(game);
-    game.serve(); // 1件提供してコンボ1
-
-    const missed = game.serve(); // 何も置かずに提供
-    assert.equal(missed.lastEvent.type, 'miss');
-    assert.equal(missed.combo, 0);
-    assert.equal(missed.misses, 1);
-    assert.equal(missed.served, 1);
-  });
-
-  test('ミスしても注文は変わらない', () => {
-    const { game } = makeGame();
-    game.start();
-    const order = game.currentOrder();
-    const missed = game.serve();
-    assert.equal(missed.lastEvent.type, 'miss');
-    assert.equal(missed.order.id, order.id);
-  });
-
-  test('60秒経過でスコアが確定し、以降は操作できない', () => {
+  test('時間切れは0点でストリークが切れ、進行は止まらない', () => {
     const { game, advance } = makeGame();
     game.start();
-    solveCurrent(game);
-    game.serve();
-    const scoreBefore = game.view().score;
+    const question = bank.find((q) => q.id === game.view().question.id);
+    game.answer(question.correct.id);
+    game.next();
 
-    advance(CONFIG.sprintSeconds * 1000 + 1);
-    const over = game.view();
-    assert.equal(over.status, 'over');
-    assert.equal(over.remainingMs, 0);
-    assert.equal(over.score, scoreBefore);
-
-    // 時間切れ後はチップも提供も受け付けない
-    const afterChip = game.toggleChip('w_price');
-    assert.deepEqual(afterChip.placement.where, []);
-    assert.equal(game.serve().lastEvent.type, 'timeup');
+    advance(5000);
+    const timedOut = game.tick();
+    assert.equal(timedOut.phase, 'revealed');
+    assert.equal(timedOut.reveal.outcome, 'timeout');
+    assert.equal(timedOut.streak, 0);
+    assert.equal(timedOut.status, 'playing');
   });
 
-  test('捌いた件数・最大コンボ・ミス回数が内訳として残る', () => {
+  test('締切後の回答は時間切れとして扱う（二重集計しない）', () => {
+    const { game, advance } = makeGame();
+    const view = game.start();
+    const question = bank.find((q) => q.id === view.question.id);
+    advance(5001);
+
+    const answered = game.answer(question.correct.id);
+    assert.equal(answered.reveal.outcome, 'timeout');
+    assert.equal(answered.correct, 0);
+    assert.equal(answered.answered, 1);
+  });
+
+  test('60秒経過で終了し、以降は操作できない', () => {
+    const { game, advance } = makeGame();
+    game.start();
+    advance(CONFIG.timeAttackSeconds * 1000 + 1);
+
+    const over = game.view();
+    assert.equal(over.status, 'over');
+    assert.equal(over.remainingSessionMs, 0);
+
+    const answered = game.answer('anything');
+    assert.equal(answered.status, 'over');
+  });
+
+  test('スコア・正解数・最大ストリーク・ミス回数が残る', () => {
     const { game } = makeGame();
     game.start();
     for (let i = 0; i < 3; i += 1) {
-      solveCurrent(game);
-      game.serve();
+      const question = bank.find((q) => q.id === game.view().question.id);
+      game.answer(question.correct.id);
+      game.next();
     }
-    game.serve(); // ミス
-
+    // 1問ミス
     const view = game.view();
-    assert.equal(view.served, 3);
-    assert.equal(view.maxCombo, 3);
-    assert.equal(view.misses, 1);
-    assert.equal(view.combo, 0);
+    const question = bank.find((q) => q.id === view.question.id);
+    const wrong = view.choices.find((choice) => choice.id !== question.correct.id);
+    game.answer(wrong.id);
+
+    const result = game.view();
+    assert.equal(result.correct, 3);
+    assert.equal(result.maxStreak, 3);
+    assert.equal(result.misses, 1);
+    assert.equal(result.streak, 0);
+    assert.ok(result.score > 0);
   });
 
-  test('注文は常時1件だけ（同時に2件以上出さない）', () => {
+  test('制限時間は3／5／8秒から選べる', () => {
+    for (const seconds of CONFIG.questionSecondsOptions) {
+      const { game } = makeGame({ questionSeconds: seconds });
+      const view = game.start();
+      assert.equal(view.questionLimitMs, seconds * 1000);
+      assert.equal(view.remainingQuestionMs, seconds * 1000);
+    }
+  });
+
+  test('問題は常時1問だけ（同時に2問以上出さない）', () => {
     const { game } = makeGame();
     const view = game.start();
-    assert.equal(typeof view.order, 'object');
-    assert.equal(Array.isArray(view.order), false);
-    assert.equal(Object.keys(view).includes('orders'), false);
+    assert.equal(typeof view.question, 'object');
+    assert.equal(Array.isArray(view.question), false);
+    assert.equal('questions' in view, false);
   });
 
-  test('全注文が順に解ける（棚のチップだけで完成形に到達できる）', () => {
+  test('問題が尽きたら先頭へ戻って続ける', () => {
     const { game } = makeGame();
     game.start();
     const seen = new Set();
-    for (let i = 0; i < ORDERS.length; i += 1) {
-      const order = game.currentOrder();
-      seen.add(order.id);
-      solveCurrent(game);
-      const view = game.serve();
-      assert.equal(view.lastEvent.type, 'served', `${order.id} が解けない`);
+    for (let i = 0; i < bank.length + 3; i += 1) {
+      const view = game.view();
+      if (view.status !== 'playing') break;
+      seen.add(view.question.id);
+      const question = bank.find((q) => q.id === view.question.id);
+      game.answer(question.correct.id);
+      game.next();
     }
-    assert.equal(seen.size, ORDERS.length);
+    assert.ok(seen.size > 0);
   });
 
   test('開始前は操作を受け付けない', () => {
     const { game } = makeGame();
-    const view = game.toggleChip('w_price');
+    const view = game.answer('anything');
     assert.equal(view.status, 'idle');
-    assert.deepEqual(view.placement.where, []);
   });
 });

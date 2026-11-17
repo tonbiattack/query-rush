@@ -7,16 +7,16 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="app">
+    <div class="app" id="app">
       <header class="hud">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">QR</span>
           <span class="brand-name">QUERY RUSH</span>
         </div>
 
-        <div class="timer" role="timer" aria-live="off">
-          <div class="timer-track"><div class="timer-fill" id="timer-fill"></div></div>
-          <span class="timer-text" id="timer-text">60.0</span>
+        <div class="session">
+          <div class="session-track"><div class="session-fill" id="session-fill"></div></div>
+          <span class="session-text" id="session-text">60.0</span>
         </div>
 
         <div class="stats">
@@ -24,55 +24,50 @@
             <span class="stat-label">スコア</span>
             <span class="stat-value" id="score">0</span>
           </div>
-          <div class="stat stat-combo">
-            <span class="stat-label">コンボ</span>
-            <span class="stat-value" id="combo">×1.00</span>
+          <div class="stat stat-streak">
+            <span class="stat-label">ストリーク</span>
+            <span class="stat-value" id="streak">0</span>
           </div>
           <div class="stat">
-            <span class="stat-label">ミス</span>
-            <span class="stat-value" id="misses">0</span>
+            <span class="stat-label">正解</span>
+            <span class="stat-value" id="correct">0</span>
           </div>
         </div>
       </header>
 
-      <main class="bands">
-        <section class="band band-top" aria-label="注文票と完成形">
-          <article class="ticket" id="ticket">
-            <div class="ticket-head">
-              <span class="ticket-no" id="ticket-no">注文 #1</span>
-              <span class="ticket-trap" id="ticket-trap">罠なし</span>
-            </div>
-            <p class="ticket-text" id="ticket-text">—</p>
-            <p class="ticket-hint" id="ticket-hint"></p>
-            <p class="ticket-trap-note" id="ticket-trap-note"></p>
+      <main class="stage">
+        <section class="tables" aria-label="絞り込み前と絞り込み後">
+          <article class="panel panel-before">
+            <h2 class="panel-title">絞り込み前</h2>
+            <div class="panel-body" id="before-body"></div>
           </article>
 
-          <article class="target">
-            <h2 class="panel-title">完成形</h2>
-            <div class="target-body" id="target-body"></div>
+          <div class="arrow" aria-hidden="true">
+            <span class="arrow-line"></span>
+            <span class="arrow-head"></span>
+          </div>
+
+          <article class="panel panel-after">
+            <h2 class="panel-title">絞り込み後</h2>
+            <div class="panel-body" id="after-body"></div>
           </article>
         </section>
 
-        <section class="band band-mid" aria-label="テーブルとライブプレビュー">
-          <div class="sql-bar">
-            <code class="sql" id="sql"></code>
-            <span class="sql-meta" id="sql-meta"></span>
-          </div>
-          <div class="table-wrap">
-            <table class="data-table" id="data-table">
-              <thead id="data-head"></thead>
-              <tbody id="data-body"></tbody>
-            </table>
-            <div class="agg-note" id="agg-note" hidden></div>
+        <section class="ask" aria-live="polite">
+          <p class="ask-text" id="ask-text">どの WHERE でこうなった？</p>
+          <div class="potential" id="potential">
+            <span class="potential-label">いま正解なら</span>
+            <span class="potential-value" id="potential-value">300</span>
+            <span class="potential-unit">点</span>
           </div>
         </section>
 
-        <section class="band band-bottom" aria-label="句チップの棚">
-          <div class="shelf" id="shelf"></div>
-          <div class="actions">
-            <button type="button" class="btn btn-ghost" id="clear">クリア</button>
-            <button type="button" class="btn btn-serve" id="serve">提供する</button>
-          </div>
+        <section class="choices" id="choices" aria-label="選択肢"></section>
+
+        <section class="reveal" id="reveal" hidden>
+          <p class="reveal-verdict" id="reveal-verdict"></p>
+          <p class="reveal-explanation" id="reveal-explanation"></p>
+          <button type="button" class="btn btn-next" id="next-btn">次へ</button>
         </section>
       </main>
     </div>

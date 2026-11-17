@@ -1,60 +1,194 @@
 /**
- * 寿司屋の売上テーブル。
+ * 問題データの素材。
  *
- * データ側の罠（難化要素）を意図的に仕込んである。数値は「どのチップも
- * 外せない」ように設計してあり、scripts/check-orders.js が機械的に検証する。
+ * 1つのデータセット＝1つの小さなテーブル（表示は最大8行）。
+ * 罠はデータ側に置く（docs/SPEC.md「データ設計」）:
+ *  - 似た列名: price / list_price、qty / total、age / years、qty / reorder
+ *  - NULL: price・stock・member・note に混入
+ *  - 重複: total が同値の行（960 が2行）
  *
- *  - 似た列名: price / list_price、sales / sales_count
- *      price > 1000 と list_price > 1000 で結果が変わるよう、
- *      売価と定価の差がある出前ちらしやタイムセール盛りを置く
- *  - NULL: price（穴子・白身）、stock（中とろ・白身）
- *  - 重複: sales が同値の行（茶碗蒸し・だし巻き）→ 並び順は id で一意に決める
- *  - 売り切れ: stock = 0 の行（まぐろ・特上にぎり・貝・海鮮丼）
- *  - 返品: status = 'returned' の行が売上上位に混ざる（えび・大とろ・天ぷら）
+ * candidates は「そのテーブルで実際に使える WHERE 候補」。
+ * 正解1つ＋惜しい不正解3つをここから選ぶ（ランダムなダミーは入れない）。
+ *
+ * 各列ファミリー（同じ列を触る候補）は、結果がすべて異なるように作ってある。
+ * そうしないと「正解が一意」な問題が成立しない。scripts/check-questions.js が検証する。
+ *
+ * similarColumns は「似た列名」の組。惜しい不正解を選ぶときに、
+ * 同じ列に加えてこの組の列も候補にする（price と list_price の取り違え等）。
  */
-export const SCHEMA_SQL = `
-CREATE TABLE items (
-  id          INTEGER PRIMARY KEY,
-  item        TEXT    NOT NULL,
-  category    TEXT    NOT NULL,
-  price       INTEGER,
-  list_price  INTEGER NOT NULL,
-  status      TEXT    NOT NULL,
-  sales       INTEGER NOT NULL,
-  sales_count INTEGER NOT NULL,
-  stock       INTEGER
-);
-`;
 
-/** id, item, category, price, list_price, status, sales, sales_count, stock */
-export const SEED_ROWS = [
-  [1, 'まぐろ', 'にぎり', 480, 520, 'served', 9600, 20, 0],
-  [2, 'サーモン', 'にぎり', 380, 420, 'served', 7600, 20, 8],
-  [3, 'えび', 'にぎり', 320, 360, 'returned', 15000, 20, 5],
-  [4, 'たまご', 'にぎり', 180, 200, 'served', 3600, 25, 30],
-  [5, 'いくら', 'にぎり', 620, 680, 'served', 6200, 10, 4],
-  [6, 'うに', 'にぎり', 1200, 1400, 'served', 12000, 10, 2],
-  [7, '中とろ', 'にぎり', 980, 1100, 'served', 10500, 10, null],
-  [8, '大とろ', 'にぎり', 1600, 1800, 'returned', 10000, 5, 1],
-  [9, '特上にぎり', 'にぎり', 2400, 2600, 'served', 8200, 3, 0],
-  [10, 'かっぱ巻', '巻物', 220, 240, 'served', 4400, 30, 25],
-  [11, '鉄火巻', '巻物', 420, 460, 'served', 4200, 10, 9],
-  [12, '納豆巻', '巻物', 200, 220, 'returned', 400, 2, 6],
-  [13, 'かんぴょう巻', '巻物', 180, 200, 'served', 1800, 20, 18],
-  [14, '味噌汁', '汁物', 150, 150, 'served', 3000, 40, 40],
-  [15, 'あら汁', '汁物', 280, 300, 'served', 2800, 10, 7],
-  [16, '茶碗蒸し', '一品', 450, 500, 'served', 4500, 10, 5],
-  [17, 'だし巻き', '一品', 380, 400, 'served', 4500, 10, 11],
-  [18, '枝豆', '一品', 250, 280, 'served', 5000, 35, 22],
-  [19, '冷奴', '一品', 300, 320, 'returned', 300, 1, 14],
-  [20, '天ぷら', '一品', 1280, 1400, 'returned', 7800, 10, 3],
-  [21, '穴子', 'にぎり', null, 560, 'served', 5600, 10, 6],
-  [22, '白身', 'にぎり', null, 400, 'served', 4000, 10, null],
-  [23, '貝', 'にぎり', 520, 560, 'served', 5200, 10, 0],
-  [24, '玉子焼き', '一品', 350, 380, 'served', 3500, 10, 9],
-  [25, 'とろたく巻', '巻物', 560, 600, 'served', 4800, 10, 4],
-  [26, '上にぎり', 'にぎり', 1500, 1700, 'served', 6800, 8, 4],
-  [27, '海鮮丼', '丼', 900, 2000, 'served', 11000, 45, 0],
-  [28, 'タイムセール盛り', '一品', 900, 1200, 'served', 2600, 12, 5],
-  [29, '出前ちらし', '丼', 1300, 950, 'served', 11500, 4, 2],
+export const DATASETS = [
+  {
+    id: 'menu',
+    title: 'メニュー',
+    columns: ['name', 'price', 'list_price', 'status', 'stock'],
+    similarColumns: [['price', 'list_price']],
+    rows: [
+      { id: 1, name: 'まぐろ', price: 480, list_price: 520, status: 'served', stock: 3 },
+      { id: 2, name: 'サーモン', price: 380, list_price: 420, status: 'served', stock: 5 },
+      { id: 3, name: 'えび', price: 320, list_price: 360, status: 'returned', stock: 2 },
+      { id: 4, name: 'たまご', price: 180, list_price: 200, status: 'served', stock: 8 },
+      { id: 5, name: 'うに', price: 1200, list_price: 1400, status: 'served', stock: 1 },
+      { id: 6, name: '中とろ', price: 1000, list_price: 1100, status: 'pending', stock: null },
+      { id: 7, name: '大とろ', price: 1600, list_price: 1800, status: 'returned', stock: 0 },
+      { id: 8, name: '穴子', price: null, list_price: 560, status: 'served', stock: 4 },
+    ],
+    candidates: [
+      // price ファミリー
+      { id: 'm_price_gt', label: 'price > 1000', sql: 'price > 1000' },
+      { id: 'm_price_ge', label: 'price >= 1000', sql: 'price >= 1000' },
+      { id: 'm_price_lt400', label: 'price < 400', sql: 'price < 400' },
+      { id: 'm_price_lt500', label: 'price < 500', sql: 'price < 500' },
+      { id: 'm_price_null', label: 'price IS NULL', sql: 'price IS NULL' },
+      { id: 'm_price_not_null', label: 'price IS NOT NULL', sql: 'price IS NOT NULL' },
+      // list_price ファミリー（似た列名の罠）
+      { id: 'm_list_gt', label: 'list_price > 1000', sql: 'list_price > 1000' },
+      { id: 'm_list_lt600', label: 'list_price < 600', sql: 'list_price < 600' },
+      { id: 'm_list_gt1500', label: 'list_price > 1500', sql: 'list_price > 1500' },
+      // status ファミリー
+      { id: 'm_served', label: "status = 'served'", sql: "status = 'served'" },
+      { id: 'm_returned', label: "status = 'returned'", sql: "status = 'returned'" },
+      { id: 'm_pending', label: "status = 'pending'", sql: "status = 'pending'" },
+      { id: 'm_not_returned', label: "status != 'returned'", sql: "status != 'returned'" },
+      { id: 'm_not_served', label: "status != 'served'", sql: "status != 'served'" },
+      { id: 'm_not_pending', label: "status != 'pending'", sql: "status != 'pending'" },
+      // stock ファミリー
+      { id: 'm_stock_gt', label: 'stock > 0', sql: 'stock > 0' },
+      { id: 'm_stock_ge3', label: 'stock >= 3', sql: 'stock >= 3' },
+      { id: 'm_stock_lt3', label: 'stock < 3', sql: 'stock < 3' },
+      { id: 'm_stock_null', label: 'stock IS NULL', sql: 'stock IS NULL' },
+      { id: 'm_stock_not_null', label: 'stock IS NOT NULL', sql: 'stock IS NOT NULL' },
+    ],
+  },
+  {
+    id: 'orders',
+    title: '注文',
+    columns: ['item', 'qty', 'total', 'status', 'member'],
+    similarColumns: [['qty', 'total']],
+    rows: [
+      { id: 1, item: 'まぐろ', qty: 2, total: 960, status: 'paid', member: 'yes' },
+      { id: 2, item: 'サーモン', qty: 1, total: 380, status: 'paid', member: 'no' },
+      { id: 3, item: 'えび', qty: 3, total: 960, status: 'cancelled', member: 'yes' },
+      { id: 4, item: 'たまご', qty: 5, total: 900, status: 'paid', member: 'yes' },
+      { id: 5, item: 'うに', qty: 1, total: 1200, status: 'paid', member: 'no' },
+      { id: 6, item: '中とろ', qty: 2, total: 2000, status: 'pending', member: 'yes' },
+      { id: 7, item: '大とろ', qty: 1, total: 1600, status: 'cancelled', member: 'no' },
+      { id: 8, item: '穴子', qty: 4, total: 2240, status: 'paid', member: null },
+    ],
+    candidates: [
+      // qty ファミリー
+      { id: 'o_qty_gt2', label: 'qty > 2', sql: 'qty > 2' },
+      { id: 'o_qty_ge2', label: 'qty >= 2', sql: 'qty >= 2' },
+      { id: 'o_qty_lt2', label: 'qty < 2', sql: 'qty < 2' },
+      { id: 'o_qty_le2', label: 'qty <= 2', sql: 'qty <= 2' },
+      { id: 'o_qty_gt4', label: 'qty > 4', sql: 'qty > 4' },
+      // total ファミリー（似た列名の罠）
+      { id: 'o_total_gt1000', label: 'total > 1000', sql: 'total > 1000' },
+      { id: 'o_total_ge960', label: 'total >= 960', sql: 'total >= 960' },
+      { id: 'o_total_lt1000', label: 'total < 1000', sql: 'total < 1000' },
+      { id: 'o_total_gt2000', label: 'total > 2000', sql: 'total > 2000' },
+      // status ファミリー
+      { id: 'o_paid', label: "status = 'paid'", sql: "status = 'paid'" },
+      { id: 'o_cancelled', label: "status = 'cancelled'", sql: "status = 'cancelled'" },
+      { id: 'o_pending', label: "status = 'pending'", sql: "status = 'pending'" },
+      { id: 'o_not_paid', label: "status != 'paid'", sql: "status != 'paid'" },
+      { id: 'o_not_cancelled', label: "status != 'cancelled'", sql: "status != 'cancelled'" },
+      { id: 'o_not_pending', label: "status != 'pending'", sql: "status != 'pending'" },
+      // member ファミリー
+      { id: 'o_member_yes', label: "member = 'yes'", sql: "member = 'yes'" },
+      { id: 'o_member_no', label: "member = 'no'", sql: "member = 'no'" },
+      { id: 'o_member_null', label: 'member IS NULL', sql: 'member IS NULL' },
+      { id: 'o_member_not_null', label: 'member IS NOT NULL', sql: 'member IS NOT NULL' },
+      { id: 'o_member_not_yes', label: "member != 'yes'", sql: "member != 'yes'" },
+    ],
+  },
+  {
+    id: 'staff',
+    title: '従業員',
+    columns: ['name', 'age', 'years', 'role', 'shift'],
+    similarColumns: [['age', 'years']],
+    rows: [
+      { id: 1, name: '田中', age: 28, years: 3, role: 'chef', shift: 'morning' },
+      { id: 2, name: '佐藤', age: 34, years: 8, role: 'chef', shift: 'evening' },
+      { id: 3, name: '鈴木', age: 22, years: 1, role: 'helper', shift: 'night' },
+      { id: 4, name: '高橋', age: 45, years: 20, role: 'manager', shift: 'morning' },
+      { id: 5, name: '伊藤', age: 31, years: 5, role: 'helper', shift: 'evening' },
+      { id: 6, name: '渡辺', age: 26, years: 2, role: 'chef', shift: 'night' },
+      { id: 7, name: '山本', age: 52, years: 25, role: 'manager', shift: 'morning' },
+      { id: 8, name: '中村', age: 39, years: 12, role: 'helper', shift: 'evening' },
+    ],
+    candidates: [
+      // age ファミリー
+      { id: 's_age_gt40', label: 'age > 40', sql: 'age > 40' },
+      { id: 's_age_ge39', label: 'age >= 39', sql: 'age >= 39' },
+      { id: 's_age_lt30', label: 'age < 30', sql: 'age < 30' },
+      { id: 's_age_lt35', label: 'age < 35', sql: 'age < 35' },
+      { id: 's_age_gt50', label: 'age > 50', sql: 'age > 50' },
+      // years ファミリー（似た列名の罠）
+      { id: 's_years_gt10', label: 'years > 10', sql: 'years > 10' },
+      { id: 's_years_ge8', label: 'years >= 8', sql: 'years >= 8' },
+      { id: 's_years_lt5', label: 'years < 5', sql: 'years < 5' },
+      { id: 's_years_le5', label: 'years <= 5', sql: 'years <= 5' },
+      { id: 's_years_gt20', label: 'years > 20', sql: 'years > 20' },
+      // role ファミリー
+      { id: 's_chef', label: "role = 'chef'", sql: "role = 'chef'" },
+      { id: 's_manager', label: "role = 'manager'", sql: "role = 'manager'" },
+      { id: 's_helper', label: "role = 'helper'", sql: "role = 'helper'" },
+      { id: 's_not_chef', label: "role != 'chef'", sql: "role != 'chef'" },
+      { id: 's_not_manager', label: "role != 'manager'", sql: "role != 'manager'" },
+      // shift ファミリー
+      { id: 's_morning', label: "shift = 'morning'", sql: "shift = 'morning'" },
+      { id: 's_evening', label: "shift = 'evening'", sql: "shift = 'evening'" },
+      { id: 's_night', label: "shift = 'night'", sql: "shift = 'night'" },
+      { id: 's_not_morning', label: "shift != 'morning'", sql: "shift != 'morning'" },
+      { id: 's_not_evening', label: "shift != 'evening'", sql: "shift != 'evening'" },
+      { id: 's_not_night', label: "shift != 'night'", sql: "shift != 'night'" },
+    ],
+  },
+  {
+    id: 'stock',
+    title: '在庫',
+    columns: ['name', 'qty', 'reorder', 'category', 'note'],
+    similarColumns: [['qty', 'reorder']],
+    rows: [
+      { id: 1, name: 'まぐろ', qty: 12, reorder: 5, category: 'fish', note: 'ok' },
+      { id: 2, name: 'サーモン', qty: 3, reorder: 5, category: 'fish', note: 'low' },
+      { id: 3, name: 'えび', qty: 0, reorder: 4, category: 'fish', note: 'out' },
+      { id: 4, name: 'たまご', qty: 30, reorder: 10, category: 'egg', note: 'ok' },
+      { id: 5, name: 'うに', qty: 2, reorder: 3, category: 'fish', note: 'low' },
+      { id: 6, name: '中とろ', qty: 7, reorder: 5, category: 'fish', note: null },
+      { id: 7, name: '大とろ', qty: 1, reorder: 2, category: 'fish', note: 'low' },
+      { id: 8, name: 'のり', qty: 9, reorder: 9, category: 'dry', note: 'ok' },
+    ],
+    candidates: [
+      // qty ファミリー
+      { id: 'k_qty_gt5', label: 'qty > 5', sql: 'qty > 5' },
+      { id: 'k_qty_ge3', label: 'qty >= 3', sql: 'qty >= 3' },
+      { id: 'k_qty_lt3', label: 'qty < 3', sql: 'qty < 3' },
+      { id: 'k_qty_le3', label: 'qty <= 3', sql: 'qty <= 3' },
+      { id: 'k_qty_gt20', label: 'qty > 20', sql: 'qty > 20' },
+      // reorder ファミリー（似た列名の罠）
+      { id: 'k_reorder_gt5', label: 'reorder > 5', sql: 'reorder > 5' },
+      { id: 'k_reorder_ge5', label: 'reorder >= 5', sql: 'reorder >= 5' },
+      { id: 'k_reorder_lt5', label: 'reorder < 5', sql: 'reorder < 5' },
+      { id: 'k_reorder_le5', label: 'reorder <= 5', sql: 'reorder <= 5' },
+      { id: 'k_reorder_gt8', label: 'reorder > 8', sql: 'reorder > 8' },
+      // category ファミリー
+      { id: 'k_fish', label: "category = 'fish'", sql: "category = 'fish'" },
+      { id: 'k_egg', label: "category = 'egg'", sql: "category = 'egg'" },
+      { id: 'k_dry', label: "category = 'dry'", sql: "category = 'dry'" },
+      { id: 'k_not_fish', label: "category != 'fish'", sql: "category != 'fish'" },
+      { id: 'k_not_egg', label: "category != 'egg'", sql: "category != 'egg'" },
+      { id: 'k_not_dry', label: "category != 'dry'", sql: "category != 'dry'" },
+      // note ファミリー
+      { id: 'k_low', label: "note = 'low'", sql: "note = 'low'" },
+      { id: 'k_ok', label: "note = 'ok'", sql: "note = 'ok'" },
+      { id: 'k_out', label: "note = 'out'", sql: "note = 'out'" },
+      { id: 'k_note_null', label: 'note IS NULL', sql: 'note IS NULL' },
+      { id: 'k_note_not_null', label: 'note IS NOT NULL', sql: 'note IS NOT NULL' },
+      { id: 'k_not_low', label: "note != 'low'", sql: "note != 'low'" },
+    ],
+  },
 ];
+
+export const DATASET_BY_ID = new Map(DATASETS.map((d) => [d.id, d]));
