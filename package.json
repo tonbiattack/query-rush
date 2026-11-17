@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "check:questions": "node scripts/check-questions.js"
+    "check:questions": "node scripts/check-questions.js",
+    "build": "node scripts/build-static.js",
+    "preview": "node scripts/preview-static.js"
   },
   "engines": {
     "node": ">=22.16.0"

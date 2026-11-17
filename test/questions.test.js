@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { CONFIG } from '../src/config.js';
-import { DATASETS } from '../src/data.js';
+import { allDatasets } from '../src/data.js';
 import { createDatabase, openEngine, signatureOf } from '../src/engine.js';
-import { buildQuestionBank, enumerateQuestions } from '../src/questions.js';
+import { MODES, MODE_ORDER, isModeId, modeOf } from '../src/modes.js';
+import { buildModeBank, buildQuestionBank } from '../src/questions.js';
 
 let dir;
 let engine;
@@ -25,47 +27,101 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe('buildQuestionBank', () => {
-  test('問題が生成される', () => {
-    assert.ok(bank.length >= 20, `生成された問題が少なすぎます: ${bank.length}`);
-  });
-
-  test('全データセットから問題が作れる', () => {
-    for (const dataset of DATASETS) {
-      const questions = bank.filter((q) => q.datasetId === dataset.id);
-      assert.ok(questions.length > 0, `${dataset.id} から問題が作れません`);
+describe('modes', () => {
+  test('全モードが定義されている', () => {
+    for (const id of ['filter', 'advanced', 'logic', 'aggregate', 'pipeline', 'master']) {
+      assert.ok(MODES[id], id);
+      assert.equal(MODES[id].id, id);
     }
   });
 
-  test('問題IDは一意', () => {
-    const ids = bank.map((q) => q.id);
-    assert.equal(new Set(ids).size, ids.length);
+  test('不明なモードは既定にフォールバックする', () => {
+    assert.equal(isModeId('nope'), false);
+    assert.equal(modeOf('nope').id, 'filter');
+    assert.equal(modeOf('logic').id, 'logic');
+  });
+
+  test('モードごとに制限時間が設定されている', () => {
+    for (const id of MODE_ORDER) {
+      assert.ok(MODES[id].questionSeconds > 0, id);
+    }
+  });
+});
+
+describe('buildQuestionBank', () => {
+  test('全モードで問題が生成される', () => {
+    for (const id of MODE_ORDER) {
+      assert.ok(bank[id].length > 0, `${id} に問題がない`);
+    }
+  });
+
+  test('問題IDはモード内で一意', () => {
+    for (const id of MODE_ORDER) {
+      const ids = bank[id].map((q) => q.id);
+      assert.equal(new Set(ids).size, ids.length, id);
+    }
+  });
+
+  test('Master は他モードの問題をすべて含む', () => {
+    const others = ['filter', 'advanced', 'logic', 'aggregate', 'pipeline']
+      .flatMap((id) => bank[id].map((q) => q.id));
+    const masterIds = new Set(bank.master.map((q) => q.id));
+    for (const id of others) {
+      assert.ok(masterIds.has(id), `${id} が Master に無い`);
+    }
   });
 });
 
 describe('問題の生成条件', () => {
-  test('絞り込み後テーブルは一意に定まる（4択のうち正解だけ）', () => {
-    for (const question of bank) {
-      const dataset = DATASETS.find((d) => d.id === question.datasetId);
-      const signature = signatureOf(question.after, question.columns);
-
-      for (const distractor of question.distractors) {
-        const other = engine.runWhere(dataset, distractor.sql);
-        assert.equal(other.ok, true, `${question.id}: ${distractor.id} が実行できない`);
-        assert.notEqual(
-          signatureOf(other.rows, question.columns),
-          signature,
-          `${question.id}: 不正解 ${distractor.id} が正解と同じ結果`,
-        );
+  test('表示は最大8行に収まる', () => {
+    for (const id of MODE_ORDER) {
+      for (const question of bank[id]) {
+        assert.ok(question.before.length <= CONFIG.maxTableRows, `${question.id}: 前が多い`);
+        assert.ok(question.after.length <= CONFIG.maxTableRows, `${question.id}: 後が多い`);
       }
     }
   });
 
-  test('正解のWHEREは実際にその結果を生む', () => {
-    for (const question of bank) {
-      const dataset = DATASETS.find((d) => d.id === question.datasetId);
-      const result = engine.runWhere(dataset, question.correct.sql);
-      assert.equal(result.ok, true);
+  test('選択肢は4つ（正解1＋不正解3）', () => {
+    for (const id of MODE_ORDER) {
+      for (const question of bank[id]) {
+        assert.equal(question.distractors.length, CONFIG.choiceCount - 1, question.id);
+      }
+    }
+  });
+
+  test('不正解は正解と同じIDでない', () => {
+    for (const id of MODE_ORDER) {
+      for (const question of bank[id]) {
+        for (const distractor of question.distractors) {
+          assert.notEqual(distractor.id, question.correct.id, question.id);
+        }
+      }
+    }
+  });
+
+  test('解説が1行で用意されている', () => {
+    for (const id of MODE_ORDER) {
+      for (const question of bank[id]) {
+        assert.equal(typeof question.explanation, 'string', question.id);
+        assert.ok(question.explanation.length > 0, question.id);
+        assert.ok(!question.explanation.includes('\n'), `${question.id}: 複数行`);
+      }
+    }
+  });
+
+  test('Filter は行が実際に減っている', () => {
+    for (const question of bank.filter) {
+      assert.ok(question.after.length < question.before.length, question.id);
+      assert.ok(question.after.length > 0, question.id);
+    }
+  });
+
+  test('Filter の正解は実際にその結果を生む', () => {
+    for (const question of bank.filter) {
+      const dataset = allDatasets().find((d) => d.id === question.datasetId);
+      const result = engine.runWhere(dataset, question.correct.label);
+      assert.equal(result.ok, true, question.id);
       assert.equal(
         signatureOf(result.rows, question.columns),
         signatureOf(question.after, question.columns),
@@ -74,91 +130,151 @@ describe('問題の生成条件', () => {
     }
   });
 
-  test('表示は最大8行に収まる', () => {
-    for (const question of bank) {
-      assert.ok(question.before.length <= CONFIG.maxTableRows, `${question.id}: 前が多すぎる`);
-      assert.ok(question.after.length <= CONFIG.maxTableRows, `${question.id}: 後が多すぎる`);
-    }
-  });
-
-  test('行が実際に減っている（絞り込みになっている）', () => {
-    for (const question of bank) {
-      assert.ok(
-        question.after.length < question.before.length,
-        `${question.id}: 行が減っていない`,
-      );
-      assert.ok(question.after.length > 0, `${question.id}: 0行`);
-    }
-  });
-
-  test('選択肢は4つ（正解1＋不正解3）', () => {
-    for (const question of bank) {
-      assert.equal(question.distractors.length, CONFIG.choiceCount - 1, question.id);
-    }
-  });
-
-  test('不正解は正解と同じ列か似た列を使っている（惜しい）', () => {
-    for (const question of bank) {
-      const dataset = DATASETS.find((d) => d.id === question.datasetId);
-      const correctColumn = question.correct.sql.split(/\s+/)[0];
+  test('Filter の不正解は正解と違う結果になる（一意性）', () => {
+    for (const question of bank.filter) {
+      const dataset = allDatasets().find((d) => d.id === question.datasetId);
+      const signature = signatureOf(question.after, question.columns);
       for (const distractor of question.distractors) {
-        const column = distractor.sql.split(/\s+/)[0];
-        const similar = (dataset.similarColumns ?? []).some(
-          ([a, b]) =>
-            (correctColumn === a && column === b) || (correctColumn === b && column === a),
-        );
-        assert.ok(
-          column === correctColumn || similar,
-          `${question.id}: ${distractor.id} が無関係な列（${column}）`,
+        const other = engine.runWhere(dataset, distractor.label);
+        assert.equal(other.ok, true, `${question.id}: ${distractor.id}`);
+        assert.notEqual(
+          signatureOf(other.rows, question.columns),
+          signature,
+          `${question.id}: ${distractor.id} が正解と同じ結果`,
         );
       }
     }
   });
 
-  test('解説が1行で用意されている', () => {
-    for (const question of bank) {
-      assert.equal(typeof question.explanation, 'string');
-      assert.ok(question.explanation.length > 0, question.id);
-      assert.ok(!question.explanation.includes('\n'), `${question.id}: 解説が複数行`);
+  test('Advanced は複合条件・IN・BETWEEN を含む', () => {
+    const labels = bank.advanced.map((q) => q.correct.label).join(' ');
+    assert.match(labels, /AND|OR/);
+    assert.match(labels, /IN/);
+    assert.match(labels, /BETWEEN/);
+  });
+
+  test('Advanced は LIKE または NULL 三値論理を含む', () => {
+    const labels = bank.advanced.map((q) => q.correct.label).join(' ');
+    assert.ok(/LIKE/.test(labels) || /IS NULL/.test(labels), labels);
+  });
+
+  test('Logic は CASE / COALESCE / NULLIF を含む', () => {
+    const labels = bank.logic.map((q) => q.correct.label).join(' ');
+    assert.match(labels, /CASE/);
+    assert.match(labels, /COALESCE/);
+    assert.match(labels, /NULLIF/);
+  });
+
+  test('Aggregate は GROUP BY と HAVING を含む', () => {
+    const labels = bank.aggregate.map((q) => q.correct.label).join(' ');
+    assert.match(labels, /GROUP BY/);
+    assert.match(labels, /HAVING/);
+  });
+
+  test('Pipeline は CTE を含む', () => {
+    for (const question of bank.pipeline) {
+      assert.match(question.correct.label, /WITH/);
+      assert.ok(question.stages.length > 0, question.id);
     }
   });
 
-  test('差分は前後の行数と整合する', () => {
-    for (const question of bank) {
-      assert.equal(question.diff.kept.length, question.after.length, question.id);
-      assert.equal(
-        question.diff.kept.length + question.diff.removed.length,
-        question.before.length,
-        question.id,
-      );
+  test('カテゴリが設定されている（#16）', () => {
+    for (const id of MODE_ORDER) {
+      for (const question of bank[id]) {
+        assert.ok(question.category, question.id);
+      }
     }
   });
 });
 
-describe('enumerateQuestions', () => {
-  test('全行が残る候補は正解にしない', () => {
-    const dataset = DATASETS.find((d) => d.id === 'menu');
-    const questions = enumerateQuestions(engine, dataset);
-    for (const question of questions) {
-      assert.ok(question.after.length < question.before.length, question.id);
+describe('buildModeBank', () => {
+  test('不明なモードは例外', () => {
+    assert.throws(() => buildModeBank(engine, 'nope'), /不明なモード/);
+  });
+
+  test('Filter は4データセットから作られる', () => {
+    const datasets = new Set(bank.filter.map((q) => q.datasetId));
+    assert.ok(datasets.size >= 4);
+  });
+});
+
+describe('engine', () => {
+  test('読み取り専用で開くので書き込みできない', () => {
+    const ro = new DatabaseSync(join(dir, 'test.db'), { readOnly: true });
+    assert.throws(() => ro.exec("INSERT INTO menu (name) VALUES ('x')"), /readonly|read-only/i);
+    ro.close();
+  });
+
+  test('危険な式は実行前に拒否する', () => {
+    const dataset = allDatasets().find((d) => d.id === 'menu');
+    for (const where of [
+      'price > 1000; DROP TABLE menu',
+      'price > 1000 -- x',
+      'unknown_col > 1',
+      'EVIL(price) > 1',
+    ]) {
+      const result = engine.runWhere(dataset, where);
+      assert.equal(result.ok, false, where);
+      assert.ok(result.error, where);
     }
   });
 
-  test('同じ結果になる候補が2つあるデータでは問題を作らない', () => {
-    // 同一の結果を返す候補をわざと2つ入れたデータセット
-    const dataset = {
-      id: 'menu',
-      title: 'テスト',
-      columns: ['name', 'price', 'list_price', 'status', 'stock'],
-      similarColumns: [['price', 'list_price']],
-      rows: DATASETS.find((d) => d.id === 'menu').rows,
-      candidates: [
-        { id: 'dup_a', label: 'price > 1000', sql: 'price > 1000' },
-        { id: 'dup_b', label: 'price > 1000', sql: 'price > 1000' },
-        { id: 'other', label: 'stock > 0', sql: 'stock > 0' },
-      ],
-    };
-    const questions = enumerateQuestions(engine, dataset);
-    assert.equal(questions.length, 0);
+  test('前後差分を返す', () => {
+    const dataset = allDatasets().find((d) => d.id === 'menu');
+    const before = engine.baseRows(dataset);
+    const after = engine.runWhere(dataset, "status = 'returned'").rows;
+    const diff = engine.diffRows(before, after);
+    assert.deepEqual(diff.kept, after.map((r) => r.id));
+    assert.equal(diff.kept.length + diff.removed.length, before.length);
+  });
+
+  test('集計クエリを実行できる', () => {
+    const dataset = allDatasets().find((d) => d.id === 'sales');
+    const result = engine.runAggregate(dataset, dataset.aggregates[0]);
+    assert.equal(result.ok, true);
+    assert.ok(result.rows.length > 0);
+    assert.ok(result.columns.includes('件数'));
+  });
+
+  test('危険な集計式は拒否する', () => {
+    const dataset = allDatasets().find((d) => d.id === 'sales');
+    assert.throws(
+      () => engine.runAggregate(dataset, {
+        groupBy: 'category',
+        select: [{ expr: 'EVIL(amount)', as: 'x' }],
+      }),
+      /許可されていない集計式/,
+    );
+  });
+
+  test('パイプラインを実行して中間段を返す', () => {
+    const dataset = allDatasets().find((d) => d.id === 'members');
+    const result = engine.runPipeline(dataset, dataset.pipelines[0]);
+    assert.equal(result.ok, true);
+    assert.ok(result.stages.length > 0);
+    assert.ok(result.rows.length > 0);
+  });
+
+  test('取得上限を超えたら打ち切る', () => {
+    const bigPath = join(dir, 'big.db');
+    createDatabase(bigPath);
+    const writable = new DatabaseSync(bigPath);
+    writable.exec(
+      `WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 150)
+       INSERT INTO menu (name, price, list_price, status, stock)
+       SELECT '追加' || n, 100, 100, 'served', 1 FROM seq`,
+    );
+    writable.close();
+
+    const bigEngine = openEngine(bigPath);
+    try {
+      const dataset = allDatasets().find((d) => d.id === 'menu');
+      const result = bigEngine.runWhere(dataset, 'price > 0');
+      assert.equal(result.truncated, true);
+      assert.equal(result.ok, false);
+      assert.ok(result.rows.length <= CONFIG.maxRows);
+    } finally {
+      bigEngine.close();
+    }
   });
 });

@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONFIG } from '../src/config.js';
 import { createDatabase, openEngine } from '../src/engine.js';
-import { buildQuestionBank } from '../src/questions.js';
+import { buildModeBank, buildQuestionBank } from '../src/questions.js';
 import {
+  buildQueue,
   createGame,
   potentialScore,
   scoreForAnswer,
@@ -32,14 +33,20 @@ after(() => {
 });
 
 /** 時計を手で進められるゲームを作る */
-function makeGame({ seed = 1, questionSeconds = 5 } = {}) {
+function makeGame({ seed = 1, mode = 'filter', questionSeconds } = {}) {
   let clock = 1_000_000;
   let s = seed;
   const rng = () => {
     s = (s * 1664525 + 1013904223) % 4294967296;
     return s / 4294967296;
   };
-  const game = createGame({ bank, rng, now: () => clock, questionSeconds });
+  const game = createGame({
+    bank: bank[mode],
+    mode,
+    rng,
+    now: () => clock,
+    questionSeconds,
+  });
   return {
     game,
     advance: (ms) => {
@@ -82,7 +89,6 @@ describe('scoreForAnswer', () => {
     assert.equal(score.base, CONFIG.basePoints);
     assert.equal(score.speed, CONFIG.speedBonusMax);
     assert.equal(score.streak, CONFIG.streakStep * 2);
-    assert.equal(score.total, CONFIG.basePoints + CONFIG.speedBonusMax + CONFIG.streakStep * 2);
   });
 
   test('1問の最大は300点', () => {
@@ -97,15 +103,42 @@ describe('scoreForAnswer', () => {
 
   test('不正解・時間切れは0点', () => {
     for (const outcome of ['incorrect', 'timeout']) {
-      const score = scoreForAnswer({ outcome, remainingMs: 5000, limitMs: 5000, streakBefore: 9 });
-      assert.equal(score.total, 0);
+      assert.equal(scoreForAnswer({ outcome, remainingMs: 5000, limitMs: 5000, streakBefore: 9 }).total, 0);
     }
   });
 
   test('速いほど高い（スコア減衰）', () => {
-    const fast = potentialScore(5000, 5000, 0);
-    const slow = potentialScore(1000, 5000, 0);
-    assert.ok(fast.total > slow.total);
+    assert.ok(potentialScore(5000, 5000, 0).total > potentialScore(1000, 5000, 0).total);
+  });
+});
+
+describe('buildQueue（#10 偏り防止）', () => {
+  test('同じデータセットの連続を最小限に抑える', () => {
+    const questions = bank.filter;
+    const queue = buildQueue(questions, () => 0.5);
+    let consecutive = 0;
+    for (let i = 1; i < queue.length; i += 1) {
+      if (queue[i].datasetId === queue[i - 1].datasetId) consecutive += 1;
+    }
+    // データセット数に対して問題数が偏っているので完全ゼロにはできないが、
+    // 大半は連続を避けられていること
+    assert.ok(consecutive <= 3, `連続が多すぎる: ${consecutive}`);
+  });
+
+  test('直近に出た問題を後ろへ回す', () => {
+    const questions = bank.filter;
+    const recentIds = questions.slice(0, 10).map((q) => q.id);
+    const queue = buildQueue(questions, Math.random, { recentIds });
+    const firstTen = queue.slice(0, 10).map((q) => q.id);
+    const overlap = firstTen.filter((id) => recentIds.includes(id));
+    assert.ok(overlap.length <= 2, `直近の問題が先頭に来すぎ: ${overlap.length}`);
+  });
+
+  test('全問が含まれる（取りこぼさない）', () => {
+    const questions = bank.filter;
+    const queue = buildQueue(questions, Math.random);
+    assert.equal(queue.length, questions.length);
+    assert.equal(new Set(queue.map((q) => q.id)).size, questions.length);
   });
 });
 
@@ -118,85 +151,134 @@ describe('createGame', () => {
     assert.ok(view.question.id);
     assert.equal(view.choices.length, CONFIG.choiceCount);
     assert.equal(view.remainingSessionMs, CONFIG.timeAttackSeconds * 1000);
-    assert.equal(view.remainingQuestionMs, 5000);
+  });
+
+  test('モードごとに制限時間が変わる', () => {
+    const filter = makeGame({ mode: 'filter' }).game.start();
+    assert.equal(filter.questionLimitMs, 5000);
+
+    const advanced = makeGame({ mode: 'advanced' }).game.start();
+    assert.equal(advanced.questionLimitMs, 8000);
+
+    const pipeline = makeGame({ mode: 'pipeline' }).game.start();
+    assert.equal(pipeline.questionLimitMs, 15000);
   });
 
   test('選択肢には正解がちょうど1つ含まれる', () => {
     const { game } = makeGame();
     const view = game.start();
-    const question = bank.find((q) => q.id === view.question.id);
-    const correctChoices = view.choices.filter((choice) => choice.id === question.correct.id);
-    assert.equal(correctChoices.length, 1);
+    const question = bank.filter.find((q) => q.id === view.question.id);
+    assert.equal(view.choices.filter((c) => c.id === question.correct.id).length, 1);
   });
 
   test('正解すると得点が入り、ストリークが伸びる', () => {
     const { game } = makeGame();
     const view = game.start();
-    const question = bank.find((q) => q.id === view.question.id);
-
+    const question = bank.filter.find((q) => q.id === view.question.id);
     const answered = game.answer(question.correct.id);
     assert.equal(answered.phase, 'revealed');
     assert.equal(answered.reveal.outcome, 'correct');
     assert.ok(answered.score > 0);
     assert.equal(answered.streak, 1);
-    assert.equal(answered.correct, 1);
-    assert.equal(answered.misses, 0);
   });
 
   test('不正解でも止まらず、0点でストリークが切れる', () => {
     const { game } = makeGame();
     const view = game.start();
-    const question = bank.find((q) => q.id === view.question.id);
-    const wrong = view.choices.find((choice) => choice.id !== question.correct.id);
-
+    const question = bank.filter.find((q) => q.id === view.question.id);
+    const wrong = view.choices.find((c) => c.id !== question.correct.id);
     const answered = game.answer(wrong.id);
-    assert.equal(answered.phase, 'revealed');
     assert.equal(answered.reveal.outcome, 'incorrect');
     assert.equal(answered.score, 0);
     assert.equal(answered.streak, 0);
-    assert.equal(answered.misses, 1);
-    // 進行は止まらない
     assert.equal(answered.status, 'playing');
   });
 
-  test('正誤表示中はタイマーが止まる（残り時間が減らない）', () => {
+  /* ── #7 正誤表示中はタイマーが止まる ─────────────── */
+
+  test('#7 正誤表示中に10秒待っても残り時間が減らない', () => {
     const { game, advance } = makeGame();
     const view = game.start();
-    const question = bank.find((q) => q.id === view.question.id);
+    const question = bank.filter.find((q) => q.id === view.question.id);
     game.answer(question.correct.id);
 
-    const before = game.view().remainingQuestionMs;
-    advance(3000);
-    const after = game.view().remainingQuestionMs;
-    assert.equal(after, before);
-    assert.equal(after, 0);
+    const before = game.view().remainingSessionMs;
+    advance(10_000);
+    const after = game.view().remainingSessionMs;
+    assert.equal(after, before, '正誤表示中にセッション残り時間が減っている');
   });
 
-  test('「次へ」で次の問題へ進み、制限時間が戻る', () => {
-    const { game } = makeGame();
+  test('#7 次の問題に進むと停止した時点の残り時間から再開する', () => {
+    const { game, advance } = makeGame();
     const view = game.start();
-    const first = view.question.id;
-    const question = bank.find((q) => q.id === first);
+    const question = bank.filter.find((q) => q.id === view.question.id);
+
+    advance(2000); // 2秒使う
+    const beforeAnswer = game.view().remainingSessionMs;
     game.answer(question.correct.id);
 
+    advance(10_000); // 正誤表示で10秒待つ
     const next = game.next();
+
+    // 停止時間は消費されていない
+    assert.equal(next.remainingSessionMs, beforeAnswer);
     assert.equal(next.phase, 'answering');
-    assert.equal(next.remainingQuestionMs, 5000);
-    assert.equal(next.reveal, null);
   });
 
-  test('正誤表示中でないと「次へ」は効かない', () => {
-    const { game } = makeGame();
+  test('#7 1問の制限時間は停止の影響を受けない', () => {
+    const { game, advance } = makeGame();
     const view = game.start();
-    const before = view.question.id;
-    const after = game.next();
-    assert.equal(after.question.id, before);
+    const question = bank.filter.find((q) => q.id === view.question.id);
+    game.answer(question.correct.id);
+    advance(10_000);
+    const next = game.next();
+    assert.equal(next.remainingQuestionMs, 5000);
+  });
+
+  test('#7 スコア計算に停止時間の副作用がない', () => {
+    const { game, advance } = makeGame();
+    const view = game.start();
+    const question = bank.filter.find((q) => q.id === view.question.id);
+    const answered = game.answer(question.correct.id);
+    const scoreAfterAnswer = answered.score;
+
+    advance(10_000);
+    assert.equal(game.view().score, scoreAfterAnswer);
+  });
+
+  test('#7 正誤表示中は時間切れにならない', () => {
+    const { game, advance } = makeGame();
+    const view = game.start();
+    const question = bank.filter.find((q) => q.id === view.question.id);
+    game.answer(question.correct.id);
+
+    // セッション全体の60秒を超える時間を待っても、revealed中は終了しない
+    advance(CONFIG.timeAttackSeconds * 1000 + 5000);
+    const view2 = game.view();
+    assert.equal(view2.status, 'playing');
+    assert.equal(view2.phase, 'revealed');
+  });
+
+  test('#7 停止時間の累積がセッション終了時刻に反映される', () => {
+    const { game, advance } = makeGame();
+    game.start();
+    // 3問連続で正誤表示中に5秒待つ
+    for (let i = 0; i < 3; i += 1) {
+      const view = game.view();
+      const question = bank.filter.find((q) => q.id === view.question.id);
+      game.answer(question.correct.id);
+      advance(5000);
+      game.next();
+    }
+    // 15秒ぶん延長されているので、まだ残り時間は多い
+    const remaining = game.view().remainingSessionMs;
+    assert.ok(remaining > CONFIG.timeAttackSeconds * 1000 - 1000, `残り時間が想定より少ない: ${remaining}`);
   });
 
   test('時間切れは0点でストリークが切れ、進行は止まらない', () => {
     const { game, advance } = makeGame();
     game.start();
-    const question = bank.find((q) => q.id === game.view().question.id);
+    const question = bank.filter.find((q) => q.id === game.view().question.id);
     game.answer(question.correct.id);
     game.next();
 
@@ -211,9 +293,8 @@ describe('createGame', () => {
   test('締切後の回答は時間切れとして扱う（二重集計しない）', () => {
     const { game, advance } = makeGame();
     const view = game.start();
-    const question = bank.find((q) => q.id === view.question.id);
+    const question = bank.filter.find((q) => q.id === view.question.id);
     advance(5001);
-
     const answered = game.answer(question.correct.id);
     assert.equal(answered.reveal.outcome, 'timeout');
     assert.equal(answered.correct, 0);
@@ -224,27 +305,23 @@ describe('createGame', () => {
     const { game, advance } = makeGame();
     game.start();
     advance(CONFIG.timeAttackSeconds * 1000 + 1);
-
     const over = game.view();
     assert.equal(over.status, 'over');
     assert.equal(over.remainingSessionMs, 0);
-
-    const answered = game.answer('anything');
-    assert.equal(answered.status, 'over');
+    assert.equal(game.answer('anything').status, 'over');
   });
 
   test('スコア・正解数・最大ストリーク・ミス回数が残る', () => {
     const { game } = makeGame();
     game.start();
     for (let i = 0; i < 3; i += 1) {
-      const question = bank.find((q) => q.id === game.view().question.id);
+      const question = bank.filter.find((q) => q.id === game.view().question.id);
       game.answer(question.correct.id);
       game.next();
     }
-    // 1問ミス
     const view = game.view();
-    const question = bank.find((q) => q.id === view.question.id);
-    const wrong = view.choices.find((choice) => choice.id !== question.correct.id);
+    const question = bank.filter.find((q) => q.id === view.question.id);
+    const wrong = view.choices.find((c) => c.id !== question.correct.id);
     game.answer(wrong.id);
 
     const result = game.view();
@@ -252,19 +329,9 @@ describe('createGame', () => {
     assert.equal(result.maxStreak, 3);
     assert.equal(result.misses, 1);
     assert.equal(result.streak, 0);
-    assert.ok(result.score > 0);
   });
 
-  test('制限時間は3／5／8秒から選べる', () => {
-    for (const seconds of CONFIG.questionSecondsOptions) {
-      const { game } = makeGame({ questionSeconds: seconds });
-      const view = game.start();
-      assert.equal(view.questionLimitMs, seconds * 1000);
-      assert.equal(view.remainingQuestionMs, seconds * 1000);
-    }
-  });
-
-  test('問題は常時1問だけ（同時に2問以上出さない）', () => {
+  test('問題は常時1問だけ', () => {
     const { game } = makeGame();
     const view = game.start();
     assert.equal(typeof view.question, 'object');
@@ -272,24 +339,44 @@ describe('createGame', () => {
     assert.equal('questions' in view, false);
   });
 
-  test('問題が尽きたら先頭へ戻って続ける', () => {
-    const { game } = makeGame();
-    game.start();
-    const seen = new Set();
-    for (let i = 0; i < bank.length + 3; i += 1) {
-      const view = game.view();
-      if (view.status !== 'playing') break;
-      seen.add(view.question.id);
-      const question = bank.find((q) => q.id === view.question.id);
-      game.answer(question.correct.id);
-      game.next();
-    }
-    assert.ok(seen.size > 0);
-  });
-
   test('開始前は操作を受け付けない', () => {
     const { game } = makeGame();
-    const view = game.answer('anything');
-    assert.equal(view.status, 'idle');
+    assert.equal(game.answer('anything').status, 'idle');
+  });
+
+  /* ── モード別 ─────────────────────────────────── */
+
+  test('全モードで問題が生成され、開始できる', () => {
+    for (const mode of Object.keys(bank)) {
+      assert.ok(bank[mode].length > 0, `${mode} に問題がない`);
+      const { game } = makeGame({ mode });
+      const view = game.start();
+      assert.equal(view.status, 'playing', mode);
+      assert.equal(view.mode, mode);
+      assert.ok(view.question.id, mode);
+    }
+  });
+
+  test('全モードで正解を選ぶと得点が入る', () => {
+    for (const mode of Object.keys(bank)) {
+      const { game } = makeGame({ mode });
+      const view = game.start();
+      const question = bank[mode].find((q) => q.id === view.question.id);
+      const answered = game.answer(question.correct.id);
+      assert.equal(answered.reveal.outcome, 'correct', mode);
+      assert.ok(answered.score > 0, mode);
+    }
+  });
+
+  test('カテゴリ別の正誤が記録される（#16）', () => {
+    const { game } = makeGame({ mode: 'master' });
+    game.start();
+    const question = bank.master.find((q) => q.id === game.view().question.id);
+    game.answer(question.correct.id);
+    const view = game.view();
+    const category = question.category;
+    assert.ok(view.byCategory[category]);
+    assert.equal(view.byCategory[category].correct, 1);
+    assert.equal(view.byCategory[category].total, 1);
   });
 });

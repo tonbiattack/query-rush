@@ -1,24 +1,34 @@
 /**
  * QUERY RUSH のクライアント。
  *
- * 状態はサーバーが持つ。ここは「見て選ぶ」テンポだけに集中する。
- * チップを押す → /api/answer → 返ってきたスナップショットで描き直す。
+ * 2つの動作モードを持つ:
+ *  - サーバーモード: /api/* と通信する（ローカル起動時）
+ *  - スタティックモード: questions.json を読み、ブラウザ内で完結する（GitHub Pages）
  *
- * タイマーはクライアント側で補間する（毎フレームAPIを叩かない）。
- * 時間切れはサーバーに確定させる。
+ * どちらでもUIとテンポは同じ。タイマーはクライアント側で補間し、
+ * 正誤表示中は止める（#7）。
  */
+
+import { bestFor, clearRecords, recordResult } from './records.js';
+import { createGame } from './engine.js';
 
 const $ = (id) => document.getElementById(id);
 
 const el = {
   app: $('app'),
+  modeBadge: $('mode-badge'),
   sessionFill: $('session-fill'),
   sessionText: $('session-text'),
   session: document.querySelector('.session'),
   score: $('score'),
   streak: $('streak'),
   correct: $('correct'),
+  tables: $('tables'),
+  panelBefore: $('panel-before'),
+  beforeTitle: $('before-title'),
   beforeBody: $('before-body'),
+  arrow: $('arrow'),
+  afterTitle: $('after-title'),
   afterBody: $('after-body'),
   askText: $('ask-text'),
   potential: $('potential'),
@@ -36,26 +46,132 @@ const el = {
 const state = {
   boot: null,
   view: null,
-  /** セッション全体の締切（performance.now基準） */
   sessionEndsAt: 0,
-  /** 現在の問題の締切（performance.now基準） */
   questionEndsAt: 0,
   raf: 0,
-  /** 選択した制限時間（秒） */
+  mode: 'filter',
   questionSeconds: 5,
   actions: Promise.resolve(),
+  recorded: false,
+  /** スタティックモードのゲーム実体（サーバーモードでは null） */
+  localGame: null,
+  /** サーバーが使えるか */
+  serverMode: false,
 };
 
-/* ── API ─────────────────────────────────────────── */
+/* ── バックエンド抽象 ─────────────────────────────── */
 
+/** サーバーが使えるか試す */
+async function detectServer() {
+  try {
+    const res = await fetch('./api/bootstrap', { headers: { accept: 'application/json' } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data && data.modes ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** スタティックJSONを読む */
+async function loadStatic() {
+  const res = await fetch('./questions.json');
+  if (!res.ok) throw new Error('questions.json を読み込めません');
+  return res.json();
+}
+
+/** サーバーAPIを叩く */
 async function api(path, body) {
-  const res = await fetch(path, {
+  const res = await fetch(`./api${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     headers: body === undefined ? {} : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${path} failed: ${res.status}`);
   return res.json();
+}
+
+/* ── 操作（サーバー／スタティック共通の入口） ───────── */
+
+function startGame() {
+  state.recorded = false;
+  return enqueue(async () => {
+    if (state.serverMode) {
+      return api('/start', { mode: state.mode, questionSeconds: state.questionSeconds });
+    }
+    const bank = state.boot.questions[state.mode];
+    state.localGame = createGame({
+      bank,
+      mode: state.mode,
+      questionSeconds: state.questionSeconds,
+      config: state.boot.config,
+    });
+    return state.localGame.start();
+  }, { start: true });
+}
+
+function submitAnswer(choiceId) {
+  if (state.view?.status !== 'playing' || state.view?.phase !== 'answering') return;
+  return enqueue(async () => {
+    if (state.serverMode) return api('/answer', { choiceId });
+    return state.localGame.answer(choiceId);
+  });
+}
+
+function goNext() {
+  if (state.view?.status !== 'playing' || state.view?.phase !== 'revealed') return;
+  return enqueue(async () => {
+    if (state.serverMode) return api('/next', {});
+    return state.localGame.next();
+  });
+}
+
+/** 時間切れの確定 */
+function requestTick() {
+  const run = async () => {
+    if (state.serverMode) return api('/tick');
+    return state.localGame.tick();
+  };
+  run()
+    .then((next) => {
+      render(next);
+      if (next.status === 'playing') {
+        state.sessionEndsAt = performance.now() + next.remainingSessionMs;
+        state.questionEndsAt = performance.now() + next.remainingQuestionMs;
+        setTimeout(tick, 60);
+      } else {
+        startTimer(next);
+      }
+    })
+    .catch(() => setTimeout(tick, 800));
+}
+
+/** 連続操作を順番に処理する */
+function enqueue(task, { start = false } = {}) {
+  state.actions = state.actions.then(async () => {
+    try {
+      const view = await task();
+      render(view);
+      if (start || view.status === 'over' || view.phase === 'answering') startTimer(view);
+    } catch (error) {
+      console.error(error);
+      // サーバーモードで応答が失われた場合は状態を取り直す
+      if (state.serverMode) {
+        try {
+          const view = await api('/state');
+          render(view);
+          startTimer(view);
+        } catch {
+          showOverlay(
+            Object.assign(document.createElement('p'), {
+              textContent: 'サーバーに接続できません。再読み込みしてください。',
+            }),
+          );
+        }
+      }
+    }
+  });
+  return state.actions;
 }
 
 /* ── 描画 ────────────────────────────────────────── */
@@ -76,6 +192,9 @@ function renderHud(view) {
   el.score.textContent = String(view.score);
   el.streak.textContent = String(view.streak);
   el.correct.textContent = String(view.correct);
+  const mode = state.boot.modes.find((m) => m.id === view.mode);
+  el.modeBadge.textContent = mode?.short ?? view.mode;
+  el.modeBadge.dataset.tone = mode?.tone ?? 'wasabi';
 }
 
 function renderTables(view) {
@@ -85,14 +204,29 @@ function renderTables(view) {
   const removed = new Set(question.diff.removed);
   const kept = new Set(question.diff.kept);
 
-  el.beforeBody.replaceChildren(
-    buildTable(question.columns, question.before, (row) =>
-      removed.has(row.id) ? 'is-removed' : kept.has(row.id) ? 'is-kept' : '',
-    ),
-  );
-  el.afterBody.replaceChildren(
-    buildTable(question.columns, question.after, () => 'is-kept'),
-  );
+  const isAggregate = question.mode === 'aggregate';
+  const showBefore = question.showBefore !== false;
+  el.panelBefore.hidden = !showBefore;
+  el.arrow.hidden = !showBefore;
+  el.tables.classList.toggle('is-single', !showBefore);
+
+  el.beforeTitle.textContent = isAggregate ? '元の行' : '絞り込み前';
+  el.afterTitle.textContent = isAggregate ? '集計後' : '絞り込み後';
+
+  if (showBefore) {
+    const beforeColumns = question.beforeColumns ?? question.columns;
+    el.beforeBody.replaceChildren(
+      buildTable(beforeColumns, question.before, (row) =>
+        isAggregate ? '' : removed.has(row.id) ? 'is-removed' : kept.has(row.id) ? 'is-kept' : '',
+      ),
+    );
+  }
+
+  if (question.stages && question.stages.length > 0) {
+    el.afterBody.replaceChildren(buildStages(question.columns, question.stages, question.after));
+  } else {
+    el.afterBody.replaceChildren(buildTable(question.columns, question.after, () => 'is-kept'));
+  }
 }
 
 function renderChoices(view) {
@@ -102,7 +236,6 @@ function renderChoices(view) {
   const reveal = view.reveal;
   const answered = view.phase === 'revealed';
 
-  // 選択肢の並びは問題ごとに固定。revealed中は同じ並びのまま色を付ける。
   const fragment = document.createDocumentFragment();
   view.choices.forEach((choice, index) => {
     const button = document.createElement('button');
@@ -214,6 +347,41 @@ function buildTable(columns, rows, classOf) {
   return table;
 }
 
+function buildStages(columns, stages, finalRows) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'stages';
+
+  stages.forEach((stage, index) => {
+    const block = document.createElement('div');
+    block.className = 'stage-block';
+
+    const label = document.createElement('p');
+    label.className = 'stage-label';
+    label.textContent = `WITH ${stage.name} (${stage.where})`;
+    block.append(label);
+    block.append(buildTable(columns, stage.rows, () => 'is-kept'));
+    wrapper.append(block);
+
+    if (index < stages.length - 1) {
+      const arrow = document.createElement('div');
+      arrow.className = 'stage-arrow';
+      arrow.textContent = '↓';
+      wrapper.append(arrow);
+    }
+  });
+
+  const finalBlock = document.createElement('div');
+  finalBlock.className = 'stage-block';
+  const finalLabel = document.createElement('p');
+  finalLabel.className = 'stage-label';
+  finalLabel.textContent = '最終結果';
+  finalBlock.append(finalLabel);
+  finalBlock.append(buildTable(columns, finalRows, () => 'is-kept'));
+  wrapper.append(finalBlock);
+
+  return wrapper;
+}
+
 function formatCell(value) {
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'number') return value.toLocaleString('ja-JP');
@@ -254,23 +422,71 @@ function startCard() {
     <h1 class="overlay-title">どの WHERE で、<br />こうなった？</h1>
     <p class="overlay-lead">
       上に「絞り込み前」と「絞り込み後」のテーブルが出ます。
-      下の4択から、その変化を起こした WHERE を選んでください。
+      下の4択から、その変化を起こした条件を選んでください。
       正誤と解説が出ている間はタイマーが止まります。
     </p>
-    <ul class="rules">
-      <li>問題は常に1問。同時に2問は出ません</li>
-      <li>4択の位置は毎回同じ。探す時間はありません</li>
-      <li>速く正解するほど点が高い。連続正解でさらに上乗せ</li>
-    </ul>
-    <p class="overlay-lead" style="margin-bottom:8px">1問の制限時間</p>
+    <p class="overlay-lead overlay-label">モード</p>
+    <div class="mode-picker" id="mode-picker"></div>
+    <p class="overlay-lead overlay-label">1問の制限時間</p>
     <div class="limit-picker" id="limit-picker"></div>
     <div class="overlay-actions">
       <button type="button" class="btn btn-next" id="start-btn">はじめる</button>
+      <button type="button" class="btn btn-ghost" id="clear-records-btn">記録を消す</button>
     </div>
   `;
 
+  const modePicker = card.querySelector('#mode-picker');
+  for (const mode of state.boot.modes) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'mode-option';
+    button.dataset.mode = mode.id;
+    button.dataset.tone = mode.tone;
+    button.setAttribute('aria-pressed', String(mode.id === state.mode));
+    button.innerHTML = `
+      <span class="mode-option-name"></span>
+      <span class="mode-option-desc"></span>
+      <span class="mode-option-meta"></span>
+    `;
+    button.querySelector('.mode-option-name').textContent = mode.name;
+    button.querySelector('.mode-option-desc').textContent = mode.description;
+    const best = bestFor(mode.id, mode.questionSeconds);
+    button.querySelector('.mode-option-meta').textContent =
+      `${mode.questionCount}問` + (best !== null ? ` · 自己ベスト ${best}` : '');
+    button.addEventListener('click', () => {
+      state.mode = mode.id;
+      state.questionSeconds = mode.questionSeconds;
+      for (const other of modePicker.children) {
+        other.setAttribute('aria-pressed', String(other === button));
+      }
+      renderLimitPicker(card);
+    });
+    modePicker.append(button);
+  }
+
+  card.querySelector('#start-btn').addEventListener('click', startGame);
+  card.querySelector('#clear-records-btn').addEventListener('click', () => {
+    clearRecords();
+    showOverlay(startCard());
+  });
+
+  const selected = state.boot.modes.find((m) => m.id === state.mode);
+  state.questionSeconds = selected?.questionSeconds ?? 5;
+  renderLimitPicker(card);
+
+  return card;
+}
+
+function renderLimitPicker(card) {
   const picker = card.querySelector('#limit-picker');
-  for (const seconds of state.boot.config.questionSecondsOptions) {
+  if (!picker) return;
+  picker.replaceChildren();
+
+  const mode = state.boot.modes.find((m) => m.id === state.mode);
+  const base = mode?.questionSeconds ?? 5;
+  const options = [...new Set([base, 3, 5, 8, 15])].sort((a, b) => a - b);
+
+  for (const seconds of options) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'limit-option';
@@ -284,14 +500,46 @@ function startCard() {
     });
     picker.append(button);
   }
-
-  card.querySelector('#start-btn').addEventListener('click', startGame);
-  return card;
 }
 
 function resultCard(view) {
   const card = document.createElement('div');
   const accuracy = view.answered === 0 ? 0 : Math.round((view.correct / view.answered) * 100);
+
+  let record = null;
+  if (!state.recorded) {
+    state.recorded = true;
+    record = recordResult({
+      mode: view.mode,
+      questionSeconds: state.questionSeconds,
+      score: view.score,
+      correct: view.correct,
+      misses: view.misses,
+      maxStreak: view.maxStreak,
+      answered: view.answered,
+    });
+  }
+
+  const bestLine = record
+    ? record.isBest
+      ? record.previousBest === null
+        ? '<p class="record-line is-best">はじめての記録です</p>'
+        : `<p class="record-line is-best">自己ベスト更新（前回 ${record.previousBest}）</p>`
+      : record.average !== null
+        ? `<p class="record-line">平均 ${record.average} との差 ${view.score - record.average >= 0 ? '+' : ''}${view.score - record.average}</p>`
+        : ''
+    : '';
+
+  const categories = Object.entries(view.byCategory ?? {});
+  const categoryRows = categories.length > 1
+    ? `<dl class="breakdown breakdown-category">${categories
+        .map(
+          ([name, stat]) =>
+            `<div><dt>${escapeHtml(name)}</dt><dd>${stat.correct}/${stat.total}</dd></div>`,
+        )
+        .join('')}</dl>`
+    : '';
+
   card.innerHTML = `
     <p class="overlay-eyebrow">TIME UP</p>
     <h1 class="overlay-title">おあいそ。</h1>
@@ -299,19 +547,36 @@ function resultCard(view) {
       <strong>${view.score.toLocaleString('ja-JP')}</strong>
       <span>点</span>
     </div>
+    ${bestLine}
     <dl class="breakdown">
       <div><dt>正解</dt><dd>${view.correct}</dd></div>
       <div><dt>ミス</dt><dd>${view.misses}</dd></div>
       <div><dt>最大ストリーク</dt><dd>${view.maxStreak}</dd></div>
       <div><dt>正答率</dt><dd>${accuracy}%</dd></div>
     </dl>
+    ${categoryRows}
     <p class="overlay-lead">${verdict(view, accuracy)}</p>
     <div class="overlay-actions">
       <button type="button" class="btn btn-next" id="retry-btn">もう一度</button>
+      <button type="button" class="btn btn-ghost" id="back-btn">モード選択</button>
     </div>
   `;
   card.querySelector('#retry-btn').addEventListener('click', startGame);
+  card.querySelector('#back-btn').addEventListener('click', () => {
+    state.recorded = false;
+    showOverlay(startCard());
+  });
   return card;
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[ch]);
 }
 
 function verdict(view, accuracy) {
@@ -337,7 +602,9 @@ function tick() {
   if (!view) return;
 
   const playing = view.status === 'playing';
-  const sessionRemaining = playing
+  const paused = view.phase === 'revealed';
+
+  const sessionRemaining = playing && !paused
     ? Math.max(0, state.sessionEndsAt - performance.now())
     : view.remainingSessionMs;
   const sessionRatio = Math.max(0, Math.min(1, sessionRemaining / view.sessionMs));
@@ -345,15 +612,14 @@ function tick() {
   el.sessionFill.style.width = `${sessionRatio * 100}%`;
   el.sessionText.textContent = (sessionRemaining / 1000).toFixed(1);
   el.session.classList.toggle('is-urgent', sessionRemaining <= 10_000);
+  el.session.classList.toggle('is-paused', paused);
 
-  // スコア減衰のライブ表示（いま正解したら何点か）
   if (playing && view.phase === 'answering') {
     const questionRemaining = Math.max(0, state.questionEndsAt - performance.now());
     const ratio = Math.max(0, Math.min(1, questionRemaining / view.questionLimitMs));
     const speed = Math.round(state.boot.config.speedBonusMax * ratio);
     const streakBonus = Math.min(view.streak * state.boot.config.streakStep, state.boot.config.streakBonusMax);
-    const total = state.boot.config.basePoints + speed + streakBonus;
-    el.potentialValue.textContent = String(total);
+    el.potentialValue.textContent = String(state.boot.config.basePoints + speed + streakBonus);
     el.potential.classList.toggle('is-low', ratio < 0.34);
 
     if (questionRemaining <= 0) {
@@ -362,7 +628,7 @@ function tick() {
     }
   }
 
-  if (playing && sessionRemaining <= 0) {
+  if (playing && !paused && sessionRemaining <= 0) {
     requestTick();
     return;
   }
@@ -370,75 +636,36 @@ function tick() {
   if (playing) state.raf = requestAnimationFrame(tick);
 }
 
-/** 時間切れをサーバーに確定させる（失敗しても再試行する） */
-function requestTick() {
-  api('/api/tick')
-    .then((next) => {
-      render(next);
-      if (next.status === 'playing') {
-        state.sessionEndsAt = performance.now() + next.remainingSessionMs;
-        state.questionEndsAt = performance.now() + next.remainingQuestionMs;
-        setTimeout(tick, 60);
-      } else {
-        startTimer(next);
-      }
-    })
-    .catch(() => setTimeout(tick, 800));
-}
-
-/* ── 操作 ────────────────────────────────────────── */
-
-// 連続タップを捨てず、入力された順番でサーバーへ送る。
-function enqueueAction(path, body, { start = false } = {}) {
-  state.actions = state.actions.then(async () => {
-    try {
-      const view = await api(path, body);
-      render(view);
-      if (start || view.status === 'over' || view.phase === 'answering') startTimer(view);
-    } catch (error) {
-      // 応答だけが失われた場合もあるので、再送せず現在の状態を取得する。
-      try {
-        const view = await api('/api/state');
-        render(view);
-        startTimer(view);
-      } catch {
-        showOverlay(
-          Object.assign(document.createElement('p'), {
-            textContent: 'サーバーに接続できません。再起動してページを更新してください。',
-          }),
-        );
-      }
-      console.error(error);
-    }
-  });
-  return state.actions;
-}
-
-function startGame() {
-  return enqueueAction('/api/start', { questionSeconds: state.questionSeconds }, { start: true });
-}
-
-function submitAnswer(choiceId) {
-  if (state.view?.status !== 'playing' || state.view?.phase !== 'answering') return;
-  return enqueueAction('/api/answer', { choiceId });
-}
-
-function goNext() {
-  if (state.view?.status !== 'playing' || state.view?.phase !== 'revealed') return;
-  return enqueueAction('/api/next', {});
-}
-
 /* ── 起動 ────────────────────────────────────────── */
 
 async function boot() {
-  state.boot = await api('/api/bootstrap');
-  state.questionSeconds = state.boot.config.defaultQuestionSeconds;
+  // サーバーがあればサーバーモード、無ければスタティックモード
+  const serverBoot = await detectServer();
+  if (serverBoot) {
+    state.serverMode = true;
+    state.boot = serverBoot;
+  } else {
+    state.serverMode = false;
+    const data = await loadStatic();
+    state.boot = {
+      config: data.config,
+      modes: data.modes,
+      questions: data.questions,
+      state: { status: 'idle', mode: 'filter', phase: 'answering', score: 0, correct: 0, misses: 0, streak: 0, maxStreak: 0, answered: 0, remainingSessionMs: data.config.timeAttackSeconds * 1000, sessionMs: data.config.timeAttackSeconds * 1000, questionLimitMs: 5000, remainingQuestionMs: 5000, question: null, choices: [], reveal: null, byCategory: {}, lastEvent: null },
+    };
+  }
+
+  state.mode = state.boot.modes[0]?.id ?? 'filter';
+  state.questionSeconds = state.boot.modes[0]?.questionSeconds ?? 5;
 
   el.nextBtn.addEventListener('click', goNext);
 
-  // 数字キー1〜4で回答、Enterで次へ
   window.addEventListener('keydown', (event) => {
-    if (event.repeat || event.target.closest('input, textarea, select')) return;
+    // window に直接 dispatch されたイベントは target が Element でないことがある
+    const target = event.target;
+    const isFormField =
+      target instanceof Element && target.closest('input, textarea, select');
+    if (event.repeat || isFormField) return;
 
     if (event.key === 'Enter') {
       event.preventDefault();
