@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>QUERY RUSH</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app" id="app">
@@ -12,6 +12,7 @@
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">QR</span>
           <span class="brand-name">QUERY RUSH</span>
+          <span class="mode-badge" id="mode-badge">Filter</span>
         </div>
 
         <div class="session">
@@ -36,19 +37,19 @@
       </header>
 
       <main class="stage">
-        <section class="tables" aria-label="絞り込み前と絞り込み後">
-          <article class="panel panel-before">
-            <h2 class="panel-title">絞り込み前</h2>
+        <section class="tables" id="tables" aria-label="絞り込み前と絞り込み後">
+          <article class="panel panel-before" id="panel-before">
+            <h2 class="panel-title" id="before-title">絞り込み前</h2>
             <div class="panel-body" id="before-body"></div>
           </article>
 
-          <div class="arrow" aria-hidden="true">
+          <div class="arrow" id="arrow" aria-hidden="true">
             <span class="arrow-line"></span>
             <span class="arrow-head"></span>
           </div>
 
           <article class="panel panel-after">
-            <h2 class="panel-title">絞り込み後</h2>
+            <h2 class="panel-title" id="after-title">絞り込み後</h2>
             <div class="panel-body" id="after-body"></div>
           </article>
         </section>
@@ -78,6 +79,6 @@
 
     <div class="floaters" id="floaters" aria-hidden="true"></div>
 
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>

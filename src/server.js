@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { CONFIG } from './config.js';
 import { createDatabase, openEngine } from './engine.js';
 import { createGame } from './game.js';
+import { DEFAULT_MODE, MODES, isModeId, modeList } from './modes.js';
 import { buildQuestionBank } from './questions.js';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -28,21 +29,21 @@ const MIME = {
 };
 
 export function createApp({ dbPath } = {}) {
-  // 問題データは固定シード。起動ごとに専用の一時DBを作って読み取り専用で開く。
   const tempDir = dbPath ? null : mkdtempSync(join(tmpdir(), 'query-rush-'));
   if (tempDir) dbPath = createDatabase(join(tempDir, 'game.db'));
   const engine = openEngine(dbPath);
   const bank = buildQuestionBank(engine);
-  if (bank.length === 0) throw new Error('問題を1問も生成できませんでした');
 
-  let game = createGame({ bank });
+  const totalQuestions = Object.values(bank).reduce((sum, list) => sum + list.length, 0);
+  if (totalQuestions === 0) throw new Error('問題を1問も生成できませんでした');
+
+  let game = createGame({ bank: bank[DEFAULT_MODE], mode: DEFAULT_MODE });
+  let recentIds = [];
 
   const routes = {
     'GET /api/bootstrap': () => ({
       config: {
         timeAttackSeconds: CONFIG.timeAttackSeconds,
-        questionSecondsOptions: CONFIG.questionSecondsOptions,
-        defaultQuestionSeconds: CONFIG.defaultQuestionSeconds,
         basePoints: CONFIG.basePoints,
         speedBonusMax: CONFIG.speedBonusMax,
         streakStep: CONFIG.streakStep,
@@ -51,19 +52,41 @@ export function createApp({ dbPath } = {}) {
         maxTableRows: CONFIG.maxTableRows,
         choiceCount: CONFIG.choiceCount,
       },
-      questionCount: bank.length,
+      modes: modeList().map((mode) => ({
+        id: mode.id,
+        name: mode.name,
+        short: mode.short,
+        description: mode.description,
+        questionSeconds: mode.questionSeconds,
+        tone: mode.tone,
+        questionCount: bank[mode.id]?.length ?? 0,
+      })),
+      questionCount: totalQuestions,
       state: game.view(),
     }),
     'POST /api/start': (body) => {
+      const modeId = isModeId(body.mode) ? body.mode : DEFAULT_MODE;
+      const modeBank = bank[modeId];
+      if (!modeBank || modeBank.length === 0) {
+        throw new Error(`モード ${modeId} の問題がありません`);
+      }
       const seconds = Number(body.questionSeconds);
-      const allowed = CONFIG.questionSecondsOptions.includes(seconds)
-        ? seconds
-        : CONFIG.defaultQuestionSeconds;
-      game = createGame({ bank, questionSeconds: allowed });
+      const allowed = Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+      game = createGame({
+        bank: modeBank,
+        mode: modeId,
+        questionSeconds: allowed,
+        recentIds,
+      });
       return game.start();
     },
     'POST /api/answer': (body) => game.answer(String(body.choiceId ?? '')),
-    'POST /api/next': () => game.next(),
+    'POST /api/next': () => {
+      const view = game.next();
+      // セッション終了時に出題済みIDを記録する（#10 次回の偏り防止）
+      if (view.status === 'over') recentIds = [];
+      return view;
+    },
     'POST /api/tick': () => game.tick(),
     'GET /api/state': () => game.view(),
   };
@@ -87,7 +110,6 @@ export function createApp({ dbPath } = {}) {
   async function serveStatic(pathname, res) {
     const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
     const target = normalize(join(PUBLIC_DIR, relative));
-    // ディレクトリトラバーサル防止
     if (target !== PUBLIC_DIR && !target.startsWith(`${PUBLIC_DIR}${sep}`)) {
       res.writeHead(403).end('forbidden');
       return;
@@ -154,7 +176,7 @@ export function createApp({ dbPath } = {}) {
       rmSync(tempDir, { recursive: true, force: true });
     });
   }
-  return { server, engine, game: () => game, bank };
+  return { server, engine, game: () => game, bank, modes: MODES };
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

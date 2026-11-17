@@ -117,6 +117,39 @@ body {
   color: var(--washi-dim);
 }
 
+/* 現在のモード。色でどのモードかを示す */
+.mode-badge {
+  padding: 2px 9px;
+  border-radius: 99px;
+  background: #ffffff12;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--washi-faint);
+}
+
+.mode-badge[data-tone="wasabi"] {
+  background: #93b34e26;
+  color: var(--wasabi);
+}
+.mode-badge[data-tone="ochre"] {
+  background: #d3a24a26;
+  color: var(--ochre);
+}
+.mode-badge[data-tone="plum"] {
+  background: #a583b826;
+  color: var(--plum);
+}
+.mode-badge[data-tone="maguro"] {
+  background: #d2454b26;
+  color: var(--maguro);
+}
+.mode-badge[data-tone="shari"] {
+  background: #e8e2d226;
+  color: var(--shari);
+}
+
 .session {
   display: flex;
   align-items: center;
@@ -158,6 +191,16 @@ body {
   color: var(--maguro);
 }
 
+/* 正誤表示中はタイマーが止まっていることを見た目でも示す（#7） */
+.session.is-paused .session-fill {
+  background: linear-gradient(90deg, #6f7a5c, #8a8f7a);
+  opacity: 0.6;
+}
+
+.session.is-paused .session-text {
+  color: var(--washi-faint);
+}
+
 .stats {
   display: flex;
   gap: 18px;
@@ -197,6 +240,39 @@ body {
   align-items: start;
   gap: 8px;
   min-height: 0;
+}
+
+/* 集計モードは「前」を出さないので1列にする */
+.tables.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* パイプラインの中間段 */
+.stages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stage-block {
+  border: 1px solid #ffffff0f;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.stage-label {
+  margin: 0;
+  padding: 3px 9px;
+  background: #ffffff08;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--washi-faint);
+}
+
+.stage-arrow {
+  text-align: center;
+  font-size: 11px;
+  color: #ffffff2e;
 }
 
 .panel {
@@ -729,6 +805,112 @@ body {
   display: flex;
   gap: 8px;
   margin: 0 0 20px;
+}
+
+/* モード選択 */
+.overlay-label {
+  margin-bottom: 8px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--washi-faint);
+}
+
+.mode-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0 0 18px;
+}
+
+.mode-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 1px solid #ffffff1f;
+  border-radius: var(--radius);
+  background: #ffffff08;
+  color: var(--washi-dim);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 90ms ease, background-color 90ms ease;
+}
+
+.mode-option:hover {
+  border-color: #ffffff3d;
+}
+
+.mode-option[aria-pressed="true"] {
+  border-color: var(--mode-tone, var(--wasabi));
+  background: #ffffff12;
+  box-shadow: 0 0 0 1px var(--mode-tone, var(--wasabi)) inset;
+}
+
+.mode-option[data-tone="wasabi"] {
+  --mode-tone: var(--wasabi);
+}
+.mode-option[data-tone="ochre"] {
+  --mode-tone: var(--ochre);
+}
+.mode-option[data-tone="plum"] {
+  --mode-tone: var(--plum);
+}
+.mode-option[data-tone="maguro"] {
+  --mode-tone: var(--maguro);
+}
+.mode-option[data-tone="shari"] {
+  --mode-tone: var(--shari);
+}
+
+.mode-option-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--washi);
+}
+
+.mode-option-desc {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--washi-faint);
+}
+
+.mode-option-meta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--mode-tone, var(--wasabi));
+}
+
+/* 自己ベストの表示（#11） */
+.record-line {
+  margin: -8px 0 14px;
+  font-size: 12px;
+  color: var(--washi-faint);
+}
+
+.record-line.is-best {
+  color: var(--ochre);
+  font-weight: 600;
+}
+
+/* カテゴリ別の内訳（#16） */
+.breakdown-category {
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  margin-bottom: 16px;
+}
+
+.breakdown-category dd {
+  font-size: 16px;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--washi-dim);
+  border-color: #ffffff1f;
+}
+
+.btn-ghost:hover {
+  background: #ffffff0f;
 }
 
 .limit-option {

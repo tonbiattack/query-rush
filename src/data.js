@@ -191,4 +191,286 @@ export const DATASETS = [
   },
 ];
 
-export const DATASET_BY_ID = new Map(DATASETS.map((d) => [d.id, d]));
+/* ── Advanced / Logic / Aggregate / Pipeline 用の素材 ──────────── */
+
+/**
+ * 上級モード以降で使うデータセット。
+ *
+ * mode はそのデータセットを出題するモード。
+ * candidates は Filter と同じ形式（sql は安全な式パーサーを通る）。
+ * 集計・パイプラインは candidates ではなく専用の定義を持つ。
+ */
+export const MODE_DATASETS = [
+  {
+    id: 'scores',
+    mode: 'advanced',
+    title: '成績',
+    columns: ['name', 'score', 'subject', 'attempts', 'note'],
+    similarColumns: [['score', 'attempts']],
+    rows: [
+      { id: 1, name: '田中', score: 82, subject: 'math', attempts: 2, note: 'ok' },
+      { id: 2, name: '佐藤', score: 58, subject: 'math', attempts: 1, note: 'retry' },
+      { id: 3, name: '鈴木', score: 91, subject: 'science', attempts: 3, note: 'retry' },
+      { id: 4, name: '高橋', score: 74, subject: 'science', attempts: 1, note: null },
+      { id: 5, name: '伊藤', score: 65, subject: 'math', attempts: 2, note: 'ok' },
+      { id: 6, name: '渡辺', score: 88, subject: 'english', attempts: 1, note: 'ok' },
+      { id: 7, name: '山本', score: 45, subject: 'english', attempts: 4, note: 'retry' },
+      { id: 8, name: '中村', score: 80, subject: 'science', attempts: 2, note: null },
+    ],
+    candidates: [
+      // 複合条件（AND / OR）
+      { id: 'sc_and', label: "score >= 80 AND subject = 'math'", sql: "score >= 80 AND subject = 'math'" },
+      { id: 'sc_or', label: "subject = 'math' OR subject = 'english'", sql: "subject = 'math' OR subject = 'english'" },
+      { id: 'sc_and_or', label: "score >= 80 AND (subject = 'math' OR subject = 'science')", sql: "score >= 80 AND (subject = 'math' OR subject = 'science')" },
+      { id: 'sc_not', label: 'NOT (score >= 80)', sql: 'NOT (score >= 80)' },
+      { id: 'sc_and_retry', label: "score < 80 AND note = 'retry'", sql: "score < 80 AND note = 'retry'" },
+      // IN / NOT IN
+      { id: 'sc_in_math_sci', label: "subject IN ('math', 'science')", sql: "subject IN ('math', 'science')" },
+      { id: 'sc_in_high', label: 'score IN (91, 74, 45)', sql: 'score IN (91, 74, 45)' },
+      { id: 'sc_not_in_math', label: "subject NOT IN ('math')", sql: "subject NOT IN ('math')" },
+      // BETWEEN
+      { id: 'sc_between', label: 'score BETWEEN 60 AND 85', sql: 'score BETWEEN 60 AND 85' },
+      { id: 'sc_not_between', label: 'score NOT BETWEEN 60 AND 85', sql: 'score NOT BETWEEN 60 AND 85' },
+      { id: 'sc_between_att', label: 'attempts BETWEEN 2 AND 3', sql: 'attempts BETWEEN 2 AND 3' },
+      // LIKE
+      { id: 'sc_like_fuji', label: "name LIKE '%藤%'", sql: "name LIKE '%藤%'" },
+      { id: 'sc_like_mura', label: "name LIKE '%村%'", sql: "name LIKE '%村%'" },
+      // NULL 三値論理
+      { id: 'sc_note_null', label: 'note IS NULL', sql: 'note IS NULL' },
+      { id: 'sc_note_not_null', label: 'note IS NOT NULL', sql: 'note IS NOT NULL' },
+      { id: 'sc_note_ok', label: "note = 'ok'", sql: "note = 'ok'" },
+      { id: 'sc_note_not_ok', label: "note != 'ok'", sql: "note != 'ok'" },
+      // 単純比較（比較用）
+      { id: 'sc_score_gt80', label: 'score > 80', sql: 'score > 80' },
+      { id: 'sc_score_ge80', label: 'score >= 80', sql: 'score >= 80' },
+      { id: 'sc_attempts_gt2', label: 'attempts > 2', sql: 'attempts > 2' },
+      { id: 'sc_attempts_ge2', label: 'attempts >= 2', sql: 'attempts >= 2' },
+      { id: 'sc_attempts_lt2', label: 'attempts < 2', sql: 'attempts < 2' },
+      { id: 'sc_attempts_le2', label: 'attempts <= 2', sql: 'attempts <= 2' },
+      { id: 'sc_attempts_gt3', label: 'attempts > 3', sql: 'attempts > 3' },
+    ],
+  },
+  {
+    id: 'temps',
+    mode: 'logic',
+    title: '気温',
+    columns: ['city', 'temp', 'humidity', 'weather', 'memo'],
+    similarColumns: [['temp', 'humidity']],
+    rows: [
+      { id: 1, city: '東京', temp: 28, humidity: 60, weather: 'sunny', memo: 'ok' },
+      { id: 2, city: '大阪', temp: 31, humidity: 75, weather: 'cloudy', memo: null },
+      { id: 3, city: '札幌', temp: 18, humidity: 55, weather: 'rain', memo: 'cool' },
+      { id: 4, city: '福岡', temp: 33, humidity: 80, weather: 'sunny', memo: 'hot' },
+      { id: 5, city: '名古屋', temp: 26, humidity: null, weather: 'cloudy', memo: null },
+      { id: 6, city: '仙台', temp: 22, humidity: 65, weather: 'cloudy', memo: 'cool' },
+      { id: 7, city: '広島', temp: 30, humidity: 70, weather: 'sunny', memo: 'hot' },
+      { id: 8, city: '那覇', temp: 35, humidity: 85, weather: 'sunny', memo: null },
+    ],
+    candidates: [
+      // CASE: 評価順（最初に成立した WHEN で確定）と ELSE 欠落
+      { id: 'tp_case_a', label: "CASE WHEN temp >= 32 THEN 'A' WHEN temp >= 25 THEN 'B' ELSE 'C' END = 'A'", sql: "CASE WHEN temp >= 32 THEN 'A' WHEN temp >= 25 THEN 'B' ELSE 'C' END = 'A'" },
+      { id: 'tp_case_b', label: "CASE WHEN temp >= 32 THEN 'A' WHEN temp >= 25 THEN 'B' ELSE 'C' END = 'B'", sql: "CASE WHEN temp >= 32 THEN 'A' WHEN temp >= 25 THEN 'B' ELSE 'C' END = 'B'" },
+      { id: 'tp_case_c', label: "CASE WHEN temp >= 32 THEN 'A' WHEN temp >= 25 THEN 'B' ELSE 'C' END = 'C'", sql: "CASE WHEN temp >= 32 THEN 'A' WHEN temp >= 25 THEN 'B' ELSE 'C' END = 'C'" },
+      { id: 'tp_case_noelse', label: "CASE WHEN temp >= 30 THEN 'hot' END IS NULL", sql: "CASE WHEN temp >= 30 THEN 'hot' END IS NULL" },
+      // COALESCE: NULL を補う（同じ関数の候補を複数用意して惜しい不正解を確保する）
+      { id: 'tp_coalesce_memo', label: "COALESCE(memo, 'none') = 'none'", sql: "COALESCE(memo, 'none') = 'none'" },
+      { id: 'tp_coalesce_memo2', label: "COALESCE(memo, 'none') = 'cool'", sql: "COALESCE(memo, 'none') = 'cool'" },
+      { id: 'tp_coalesce_memo3', label: "COALESCE(memo, 'none') = 'hot'", sql: "COALESCE(memo, 'none') = 'hot'" },
+      { id: 'tp_coalesce_hum', label: 'COALESCE(humidity, 100) > 70', sql: 'COALESCE(humidity, 100) > 70' },
+      { id: 'tp_coalesce_hum2', label: 'COALESCE(humidity, 100) > 80', sql: 'COALESCE(humidity, 100) > 80' },
+      { id: 'tp_coalesce_hum3', label: 'COALESCE(humidity, 100) >= 75', sql: 'COALESCE(humidity, 100) >= 75' },
+      // NULLIF: 等しいとき NULL になる
+      { id: 'tp_nullif_temp', label: 'NULLIF(temp, 28) IS NULL', sql: 'NULLIF(temp, 28) IS NULL' },
+      { id: 'tp_nullif_temp2', label: 'NULLIF(temp, 30) IS NULL', sql: 'NULLIF(temp, 30) IS NULL' },
+      { id: 'tp_nullif_temp3', label: 'NULLIF(temp, 22) IS NULL', sql: 'NULLIF(temp, 22) IS NULL' },
+      { id: 'tp_nullif_hum', label: 'NULLIF(humidity, 60) IS NOT NULL', sql: 'NULLIF(humidity, 60) IS NOT NULL' },
+      { id: 'tp_nullif_hum2', label: 'NULLIF(humidity, 75) IS NULL', sql: 'NULLIF(humidity, 75) IS NULL' },
+      { id: 'tp_nullif_hum3', label: 'NULLIF(humidity, 80) IS NULL', sql: 'NULLIF(humidity, 80) IS NULL' },
+      // 比較（Logic の結果と重ならないものだけ残す）
+      { id: 'tp_temp_gt30', label: 'temp > 30', sql: 'temp > 30' },
+      { id: 'tp_hum_null', label: 'humidity IS NULL', sql: 'humidity IS NULL' },
+      { id: 'tp_hum_not_null', label: 'humidity IS NOT NULL', sql: 'humidity IS NOT NULL' },
+      { id: 'tp_sunny', label: "weather = 'sunny'", sql: "weather = 'sunny'" },
+      { id: 'tp_cloudy', label: "weather = 'cloudy'", sql: "weather = 'cloudy'" },
+      { id: 'tp_temp_lt20', label: 'temp < 20', sql: 'temp < 20' },
+      { id: 'tp_temp_gt20', label: 'temp > 20', sql: 'temp > 20' },
+    ],
+  },
+  {
+    id: 'sales',
+    mode: 'aggregate',
+    title: '売上',
+    columns: ['shop', 'category', 'amount', 'qty', 'region'],
+    similarColumns: [['amount', 'qty']],
+    rows: [
+      { id: 1, shop: '渋谷', category: 'food', amount: 1200, qty: 3, region: 'east' },
+      { id: 2, shop: '渋谷', category: 'drink', amount: 800, qty: 5, region: 'east' },
+      { id: 3, shop: '新宿', category: 'food', amount: 1500, qty: 4, region: 'east' },
+      { id: 4, shop: '新宿', category: 'drink', amount: 600, qty: 2, region: 'east' },
+      { id: 5, shop: '梅田', category: 'food', amount: 2000, qty: 6, region: 'west' },
+      { id: 6, shop: '梅田', category: 'drink', amount: 900, qty: 3, region: 'west' },
+      { id: 7, shop: '難波', category: 'food', amount: 1100, qty: 2, region: 'west' },
+      { id: 8, shop: '難波', category: 'drink', amount: null, qty: 1, region: 'west' },
+    ],
+    candidates: [
+      { id: 'sa_food', label: "category = 'food'", sql: "category = 'food'" },
+      { id: 'sa_drink', label: "category = 'drink'", sql: "category = 'drink'" },
+      { id: 'sa_east', label: "region = 'east'", sql: "region = 'east'" },
+      { id: 'sa_west', label: "region = 'west'", sql: "region = 'west'" },
+      { id: 'sa_amount_gt1000', label: 'amount > 1000', sql: 'amount > 1000' },
+      { id: 'sa_amount_null', label: 'amount IS NULL', sql: 'amount IS NULL' },
+      { id: 'sa_qty_gt3', label: 'qty > 3', sql: 'qty > 3' },
+    ],
+    /** 集計問題の定義（GROUP BY / HAVING） */
+    aggregates: [
+      {
+        id: 'sa_by_category',
+        label: "GROUP BY category",
+        groupBy: 'category',
+        select: [
+          { column: 'category', as: 'category' },
+          { expr: 'COUNT(*)', as: '件数' },
+          { expr: 'SUM(amount)', as: '合計' },
+        ],
+        orderBy: 'category',
+      },
+      {
+        id: 'sa_by_region',
+        label: 'GROUP BY region',
+        groupBy: 'region',
+        select: [
+          { column: 'region', as: 'region' },
+          { expr: 'COUNT(*)', as: '件数' },
+          { expr: 'SUM(amount)', as: '合計' },
+        ],
+        orderBy: 'region',
+      },
+      {
+        id: 'sa_by_shop',
+        label: 'GROUP BY shop',
+        groupBy: 'shop',
+        select: [
+          { column: 'shop', as: 'shop' },
+          { expr: 'COUNT(*)', as: '件数' },
+          { expr: 'SUM(qty)', as: '数量' },
+        ],
+        orderBy: 'shop',
+      },
+      {
+        id: 'sa_count_col',
+        label: 'COUNT(amount) で NULL を数えない',
+        groupBy: 'category',
+        select: [
+          { column: 'category', as: 'category' },
+          { expr: 'COUNT(amount)', as: '金額あり' },
+          { expr: 'COUNT(*)', as: '全件' },
+        ],
+        orderBy: 'category',
+      },
+      {
+        id: 'sa_having',
+        label: 'HAVING SUM(amount) > 2000',
+        groupBy: 'shop',
+        select: [
+          { column: 'shop', as: 'shop' },
+          { expr: 'SUM(amount)', as: '合計' },
+        ],
+        having: 'SUM(amount) > 2000',
+        orderBy: 'shop',
+      },
+      {
+        id: 'sa_avg',
+        label: 'AVG(amount) で平均',
+        groupBy: 'region',
+        select: [
+          { column: 'region', as: 'region' },
+          { expr: 'AVG(amount)', as: '平均' },
+          { expr: 'MAX(amount)', as: '最大' },
+        ],
+        orderBy: 'region',
+      },
+    ],
+  },
+  {
+    id: 'members',
+    mode: 'pipeline',
+    title: '会員',
+    columns: ['name', 'score', 'active', 'plan', 'team'],
+    similarColumns: [['score', 'active']],
+    rows: [
+      { id: 1, name: '田中', score: 82, active: 1, plan: 'pro', team: 'a' },
+      { id: 2, name: '佐藤', score: 58, active: 1, plan: 'free', team: 'a' },
+      { id: 3, name: '鈴木', score: 91, active: 0, plan: 'pro', team: 'b' },
+      { id: 4, name: '高橋', score: 74, active: 1, plan: 'free', team: 'b' },
+      { id: 5, name: '伊藤', score: 65, active: 1, plan: 'pro', team: 'a' },
+      { id: 6, name: '渡辺', score: 88, active: 1, plan: 'free', team: 'c' },
+      { id: 7, name: '山本', score: 45, active: 0, plan: 'free', team: 'c' },
+      { id: 8, name: '中村', score: 79, active: 1, plan: 'pro', team: 'b' },
+    ],
+    candidates: [
+      { id: 'mb_score_ge80', label: 'score >= 80', sql: 'score >= 80' },
+      { id: 'mb_active', label: 'active = 1', sql: 'active = 1' },
+      { id: 'mb_pro', label: "plan = 'pro'", sql: "plan = 'pro'" },
+      { id: 'mb_team_a', label: "team = 'a'", sql: "team = 'a'" },
+      { id: 'mb_team_b', label: "team = 'b'", sql: "team = 'b'" },
+      { id: 'mb_score_lt60', label: 'score < 60', sql: 'score < 60' },
+    ],
+    /** パイプライン問題（CTE / JOIN）の定義 */
+    pipelines: [
+      {
+        id: 'mb_cte_high',
+        label: 'WITH high AS (score >= 80) SELECT * FROM high WHERE active = 1',
+        steps: [{ name: 'high', where: 'score >= 80' }],
+        finalWhere: 'active = 1',
+      },
+      {
+        id: 'mb_cte_pro',
+        label: 'WITH pro AS (plan = pro) SELECT * FROM pro WHERE score >= 70',
+        steps: [{ name: 'pro', where: "plan = 'pro'" }],
+        finalWhere: 'score >= 70',
+      },
+      {
+        id: 'mb_cte_team',
+        label: 'WITH a AS (team = a) SELECT * FROM a WHERE active = 1',
+        steps: [{ name: 'a', where: "team = 'a'" }],
+        finalWhere: 'active = 1',
+      },
+      {
+        id: 'mb_cte_b',
+        label: 'WITH b AS (team = b) SELECT * FROM b WHERE score >= 70',
+        steps: [{ name: 'b', where: "team = 'b'" }],
+        finalWhere: 'score >= 70',
+      },
+      {
+        id: 'mb_cte_c',
+        label: 'WITH c AS (team = c) SELECT * FROM c WHERE active = 1',
+        steps: [{ name: 'c', where: "team = 'c'" }],
+        finalWhere: 'active = 1',
+      },
+      {
+        id: 'mb_cte_low',
+        label: 'WITH low AS (score < 80) SELECT * FROM low WHERE active = 1',
+        steps: [{ name: 'low', where: 'score < 80' }],
+        finalWhere: 'active = 1',
+      },
+      {
+        id: 'mb_cte_free',
+        label: 'WITH f AS (plan = free) SELECT * FROM f WHERE active = 1',
+        steps: [{ name: 'f', where: "plan = 'free'" }],
+        finalWhere: 'active = 1',
+      },
+    ],
+  },
+];
+
+/** モードごとのデータセット一覧 */
+export function datasetsForMode(mode) {
+  return MODE_DATASETS.filter((dataset) => dataset.mode === mode);
+}
+
+/** 全データセット（Filter の素材と合わせる） */
+export function allDatasets() {
+  return [...DATASETS.map((d) => ({ ...d, mode: 'filter' })), ...MODE_DATASETS];
+}
+
+export const DATASET_BY_ID = new Map(allDatasets().map((d) => [d.id, d]));
