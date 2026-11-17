@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QUERY RUSH</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="hud">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">QR</span>
+          <span class="brand-name">QUERY RUSH</span>
+        </div>
+
+        <div class="session">
+          <div class="session-track"><div class="session-fill" id="session-fill"></div></div>
+          <span class="session-text" id="session-text">60.0</span>
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <span class="stat-label">スコア</span>
+            <span class="stat-value" id="score">0</span>
+          </div>
+          <div class="stat stat-streak">
+            <span class="stat-label">ストリーク</span>
+            <span class="stat-value" id="streak">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">正解</span>
+            <span class="stat-value" id="correct">0</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="stage">
+        <section class="tables" aria-label="絞り込み前と絞り込み後">
+          <article class="panel panel-before">
+            <h2 class="panel-title">絞り込み前</h2>
+            <div class="panel-body" id="before-body"></div>
+          </article>
+
+          <div class="arrow" aria-hidden="true">
+            <span class="arrow-line"></span>
+            <span class="arrow-head"></span>
+          </div>
+
+          <article class="panel panel-after">
+            <h2 class="panel-title">絞り込み後</h2>
+            <div class="panel-body" id="after-body"></div>
+          </article>
+        </section>
+
+        <section class="ask" aria-live="polite">
+          <p class="ask-text" id="ask-text">どの WHERE でこうなった？</p>
+          <div class="potential" id="potential">
+            <span class="potential-label">いま正解なら</span>
+            <span class="potential-value" id="potential-value">300</span>
+            <span class="potential-unit">点</span>
+          </div>
+        </section>
+
+        <section class="choices" id="choices" aria-label="選択肢"></section>
+
+        <section class="reveal" id="reveal" hidden>
+          <p class="reveal-verdict" id="reveal-verdict"></p>
+          <p class="reveal-explanation" id="reveal-explanation"></p>
+          <button type="button" class="btn btn-next" id="next-btn">次へ</button>
+        </section>
+      </main>
+    </div>
+
+    <div class="overlay" id="overlay" hidden>
+      <div class="overlay-card" id="overlay-card"></div>
+    </div>
+
+    <div class="floaters" id="floaters" aria-hidden="true"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
