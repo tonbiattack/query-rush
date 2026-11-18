@@ -184,34 +184,35 @@ export function openEngine(dbPath) {
   }
 
   /**
-   * パイプライン（CTE / JOIN）を実行する（Issue #15）。
+   * パイプライン（CTE）を実行する（Issue #15）。
    * steps を順に適用し、各段の中間結果も返す。
+   *
+   * 段の条件は累積で効く（前の段で消えた行は後の段でも残らない）。
+   * 各段の結果は「元のテーブルに、そこまでの条件をすべて AND で適用したもの」。
    */
   function runPipeline(dataset, pipeline) {
     const table = assertTableName(dataset.id);
     const stages = [];
-    let currentRows = baseRows(dataset);
-    let currentName = table;
+    const conditions = [];
 
     try {
       for (const step of pipeline.steps) {
-        const condition = assertAllowedWhere(step.where, dataset.columns, [table]);
-        const result = runSelect(`SELECT * FROM ${currentName} WHERE ${condition} ORDER BY id`);
+        conditions.push(assertAllowedWhere(step.where, dataset.columns, [table]));
+        const combined = conditions.join(' AND ');
+        const result = runSelect(`SELECT * FROM ${table} WHERE ${combined} ORDER BY id`);
         if (!result.ok) return { ...result, stages };
-        stages.push({ name: step.name, where: step.where, rows: result.rows });
-        currentRows = result.rows;
-        // 中間結果をテーブルとして持たせず、条件を積み重ねて表現する
-        currentName = table;
+        stages.push({ name: step.name, rows: result.rows });
       }
 
-      let finalRows = currentRows;
+      // 最終段の結果（steps が空なら全行）
+      let finalRows = stages.length > 0 ? stages[stages.length - 1].rows : baseRows(dataset);
+
       if (pipeline.finalWhere) {
-        const condition = assertAllowedWhere(pipeline.finalWhere, dataset.columns, [table]);
-        const result = runSelect(`SELECT * FROM ${table} WHERE ${condition} ORDER BY id`);
+        conditions.push(assertAllowedWhere(pipeline.finalWhere, dataset.columns, [table]));
+        const combined = conditions.join(' AND ');
+        const result = runSelect(`SELECT * FROM ${table} WHERE ${combined} ORDER BY id`);
         if (!result.ok) return { ...result, stages };
-        // 段の結果と最終条件の積を取る
-        const allowed = new Set(result.rows.map((row) => row.id));
-        finalRows = currentRows.filter((row) => allowed.has(row.id));
+        finalRows = result.rows;
       }
 
       return {

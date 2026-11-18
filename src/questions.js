@@ -338,6 +338,13 @@ export function enumeratePipelineQuestions(engine, dataset) {
     if (result.rows.length === 0 || result.rows.length > CONFIG.maxTableRows) continue;
     if (result.rows.length >= before.length) continue;
 
+    // 最終段で行が変わらないなら「パイプライン」になっていないので問題にしない。
+    // （中間結果と最終結果が同じだと、段を追う意味がなくなる）
+    const lastStage = result.stages[result.stages.length - 1];
+    if (lastStage && signatureOf(lastStage.rows, columns) === signatureOf(result.rows, columns)) {
+      continue;
+    }
+
     const signature = signatureOf(result.rows, columns);
 
     const sameResult = candidates.filter(
@@ -372,8 +379,11 @@ export function enumeratePipelineQuestions(engine, dataset) {
       correct: { id: correct.id, label: correct.label },
       distractors: distractors.map((d) => ({ id: d.id, label: d.label })),
       explanation: buildPipelineExplanation(correct, result),
-      /** 中間段を表示する */
-      stages: result.stages,
+      /**
+       * 段の「数」だけを渡す。段ごとの条件や行は渡さない。
+       * 中間結果を見せると、それがそのまま答えになるため。
+       */
+      stageCount: result.stages.length + (result.stages.length > 0 ? 1 : 0),
     });
   }
   return questions;
@@ -386,7 +396,6 @@ function buildPipelineExplanation(correct, result) {
   }
   return 'CTE の中間結果に対して、外側の WHERE がさらに効く。内側で消えた行は戻らない。';
 }
-
 /* ── 問題バンクの構築 ────────────────────────────────── */
 
 /** 1モードぶんの問題を作る */

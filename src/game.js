@@ -356,7 +356,8 @@ export function createGame({
             before: question.before,
             after: question.after,
             diff: question.diff,
-            stages: question.stages ?? null,
+            /** 段の数だけを渡す（段の中身は答えになるので渡さない） */
+            stageCount: question.stageCount ?? 0,
             showBefore: question.showBefore ?? true,
           }
         : null,
