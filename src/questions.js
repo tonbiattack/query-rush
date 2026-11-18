@@ -130,6 +130,23 @@ function buildFromCandidates({ dataset, mode, candidates, before, columns, expla
 
     if (distractors.length < CONFIG.choiceCount - 1) continue;
 
+    // 誤答プレビュー用に、各不正解が「どの結果になるか」を控えておく（#23）。
+    // ブラウザで任意SQLを実行させないため、ビルド時に求めた結果をそのまま持たせる。
+    const distractorPreviews = Object.fromEntries(
+      distractors.map((candidate) => {
+        const other = results.get(candidate.id);
+        return [
+          candidate.id,
+          {
+            rows: other.rows,
+            /** 正解と比べて「増えた行」「減った行」 */
+            extra: other.rows.filter((row) => !result.rows.some((a) => a.id === row.id)).map((r) => r.id),
+            missing: result.rows.filter((row) => !other.rows.some((a) => a.id === row.id)).map((r) => r.id),
+          },
+        ];
+      }),
+    );
+
     questions.push({
       id: `${dataset.id}:${correct.id}`,
       datasetId: dataset.id,
@@ -143,6 +160,8 @@ function buildFromCandidates({ dataset, mode, candidates, before, columns, expla
       correct: { id: correct.id, label: correct.label },
       distractors: distractors.map((d) => ({ id: d.id, label: d.label })),
       explanation: explain(correct, result.rows, before),
+      /** 誤答時に「その選択肢だとどうなったか」を見せるためのデータ（#23） */
+      distractorPreviews,
       ...extra,
     });
   }
@@ -280,6 +299,24 @@ export function enumerateAggregateQuestions(engine, dataset) {
 
     if (distractors.length < CONFIG.choiceCount - 1) continue;
 
+    // 誤答プレビュー（#23）。集計は行IDではなくグループキーで比べる
+    const groupKey = resultColumns[0];
+    const distractorPreviews = Object.fromEntries(
+      distractors.map((candidate) => {
+        const other = results.get(candidate.id);
+        return [
+          candidate.id,
+          {
+            rows: other.rows,
+            /** 集計は選択肢ごとに列が違うので、その結果自身の列を持たせる */
+            columns: other.columns,
+            extra: other.rows.filter((row) => !result.rows.some((a) => a[groupKey] === row[groupKey])).map((r) => r[groupKey]),
+            missing: result.rows.filter((row) => !other.rows.some((a) => a[groupKey] === row[groupKey])).map((r) => r[groupKey]),
+          },
+        ];
+      }),
+    );
+
     questions.push({
       id: `${dataset.id}:${correct.id}`,
       datasetId: dataset.id,
@@ -295,6 +332,8 @@ export function enumerateAggregateQuestions(engine, dataset) {
       correct: { id: correct.id, label: correct.label },
       distractors: distractors.map((d) => ({ id: d.id, label: d.label })),
       explanation: buildAggregateExplanation(correct, result.rows),
+      /** 誤答時に「その選択肢だとどうなったか」を見せるためのデータ（#23） */
+      distractorPreviews,
       /** 集計モードは「前のテーブル」ではなく「元の行」を見せる */
       showBefore: true,
     });
@@ -366,6 +405,21 @@ export function enumeratePipelineQuestions(engine, dataset) {
 
     if (distractors.length < CONFIG.choiceCount - 1) continue;
 
+    // 誤答プレビュー（#23）。段の条件は伏せたまま、結果の違いだけを見せる
+    const distractorPreviews = Object.fromEntries(
+      distractors.map((candidate) => {
+        const other = results.get(candidate.id);
+        return [
+          candidate.id,
+          {
+            rows: other.rows,
+            extra: other.rows.filter((row) => !result.rows.some((a) => a.id === row.id)).map((r) => r.id),
+            missing: result.rows.filter((row) => !other.rows.some((a) => a.id === row.id)).map((r) => r.id),
+          },
+        ];
+      }),
+    );
+
     questions.push({
       id: `${dataset.id}:${correct.id}`,
       datasetId: dataset.id,
@@ -379,6 +433,8 @@ export function enumeratePipelineQuestions(engine, dataset) {
       correct: { id: correct.id, label: correct.label },
       distractors: distractors.map((d) => ({ id: d.id, label: d.label })),
       explanation: buildPipelineExplanation(correct, result),
+      /** 誤答時に「その選択肢だとどうなったか」を見せるためのデータ（#23） */
+      distractorPreviews,
       /**
        * 段の「数」だけを渡す。段ごとの条件や行は渡さない。
        * 中間結果を見せると、それがそのまま答えになるため。
@@ -396,6 +452,11 @@ function buildPipelineExplanation(correct, result) {
   }
   return 'CTE の中間結果に対して、外側の WHERE がさらに効く。内側で消えた行は戻らない。';
 }
+/* ── 誤答の理由（#23） ──────────────────────────────── */
+
+// 誤答の理由づけはブラウザと共有する（public/explain.js）
+export { explainWrongChoice } from '../public/explain.js';
+
 /* ── 問題バンクの構築 ────────────────────────────────── */
 
 /** 1モードぶんの問題を作る */

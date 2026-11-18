@@ -38,6 +38,9 @@ const el = {
   reveal: $('reveal'),
   revealVerdict: $('reveal-verdict'),
   revealExplanation: $('reveal-explanation'),
+  revealDetail: $('reveal-detail'),
+  revealDetailSummary: $('reveal-detail-summary'),
+  revealDetailBody: $('reveal-detail-body'),
   nextBtn: $('next-btn'),
   overlay: $('overlay'),
   overlayCard: $('overlay-card'),
@@ -304,6 +307,64 @@ function renderReveal(view) {
     el.revealVerdict.textContent = '不正解';
   }
   el.revealExplanation.textContent = reveal.explanation;
+
+  renderWrongDetail(view, reveal);
+}
+
+/**
+ * 誤答時に「選んだ条件だとどうなったか」を展開式で見せる（#23）。
+ *
+ * 既定は閉じたまま。開いたときだけ、その選択肢の結果と正解との差分を出す。
+ * タイマーは止まっているので、読みたい人だけ読める。
+ */
+function renderWrongDetail(view, reveal) {
+  const detail = el.revealDetail;
+  const wrong = reveal.wrongDetail;
+
+  if (!wrong || !wrong.rows) {
+    detail.hidden = true;
+    detail.open = false;
+    return;
+  }
+
+  detail.hidden = false;
+  detail.open = false;
+
+  // 要約に理由を1行だけ出す（開かなくても原因が分かる）
+  el.revealDetailSummary.textContent = wrong.reason ?? '選んだ条件だとどうなったか';
+
+  const body = el.revealDetailBody;
+  body.replaceChildren();
+
+  const extra = new Set(wrong.extra ?? []);
+  const missing = new Set(wrong.missing ?? []);
+  const question = view.question;
+
+  // その選択肢を選んだ場合の結果テーブル
+  const caption = document.createElement('p');
+  caption.className = 'reveal-detail-caption';
+  caption.textContent = '選んだ条件での結果';
+  body.append(caption);
+
+  // 集計モードは選択肢ごとに列が違うので、その結果自身の列で描く
+  const previewColumns = wrong.columns ?? question.columns;
+  body.append(
+    buildTable(previewColumns, wrong.rows, (row) => {
+      const key = row.id ?? row[previewColumns[0]];
+      if (extra.has(key)) return 'is-extra';
+      if (missing.has(key)) return 'is-missing';
+      return 'is-kept';
+    }),
+  );
+
+  // 差分の要約
+  const summary = document.createElement('p');
+  summary.className = 'reveal-detail-diff';
+  const parts = [];
+  if (extra.size > 0) parts.push(`正解にない行が ${extra.size} 行`);
+  if (missing.size > 0) parts.push(`正解にある行が ${missing.size} 行足りない`);
+  summary.textContent = parts.length > 0 ? parts.join(' / ') : '行は同じだが中身が違う';
+  body.append(summary);
 }
 
 function renderOverlay(view) {
