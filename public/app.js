@@ -11,6 +11,7 @@
 
 import { bestFor, clearRecords, recordResult } from './records.js';
 import { createGame } from './engine.js';
+import { formatChoiceLabel } from './format.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -250,7 +251,8 @@ function renderChoices(view) {
 
     const label = document.createElement('span');
     label.className = 'choice-label';
-    label.textContent = choice.label;
+    // 長いSQLは句の区切りで改行する（Issue #18）。判定は choice.id で行う
+    label.textContent = formatChoiceLabel(choice.label);
 
     button.append(key, label);
 

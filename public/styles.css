@@ -468,6 +468,14 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* 選択肢のラベル。整形済みの改行をそのまま活かす（Issue #18） */
+.choice-label {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
 /* スロット番号。位置は固定で、ここが「探さない」ための手がかり */
 .choice-key {
   position: absolute;

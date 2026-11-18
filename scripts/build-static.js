@@ -92,7 +92,7 @@ function main() {
   mkdirSync(DIST, { recursive: true });
 
   // 3. 静的ファイルをコピー
-  for (const file of ['index.html', 'styles.css', 'app.js', 'records.js', 'engine.js']) {
+  for (const file of ['index.html', 'styles.css', 'app.js', 'records.js', 'engine.js', 'format.js']) {
     cpSync(join(PUBLIC, file), join(DIST, file));
   }
 
