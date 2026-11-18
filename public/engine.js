@@ -7,6 +7,8 @@
  * ロジックは src/game.js と揃えてある（スコア式・タイマー停止・偏り防止）。
  */
 
+import { explainWrongChoice } from './explain.js';
+
 /** 速度ボーナス。残り時間の割合に比例 */
 export function speedBonus(remainingMs, limitMs, max) {
   if (!Number.isFinite(limitMs) || limitMs <= 0) return 0;
@@ -179,6 +181,24 @@ export function createGame({ bank, mode, questionSeconds, config, rng = Math.ran
     state.revealStartedAt = now();
   }
 
+  /**
+   * 誤答の詳細（#23）。
+   * 選んだ選択肢だとどの結果になったかを、正解との差分つきで返す。
+   * 結果はビルド時に求めたものをそのまま使う（ブラウザでSQLを実行しない）。
+   */
+  function buildWrongDetail(question, choiceId) {
+    const preview = question.distractorPreviews?.[choiceId];
+    if (!preview) return null;
+    return {
+      reason: explainWrongChoice(question, choiceId),
+      rows: preview.rows,
+      /** 集計は選択肢ごとに列が違う */
+      columns: preview.columns ?? null,
+      extra: preview.extra ?? [],
+      missing: preview.missing ?? [],
+    };
+  }
+
   /** 停止していた時間だけセッション終了時刻を延ばす（#7） */
   function leaveReveal() {
     if (state.revealStartedAt === null) return;
@@ -228,6 +248,8 @@ export function createGame({ bank, mode, questionSeconds, config, rng = Math.ran
       correctId: question.correct.id,
       gained,
       explanation: question.explanation,
+      /** 誤答時だけ、その選択肢だとどうなったかを見せる（#23） */
+      wrongDetail: isCorrect ? null : buildWrongDetail(question, choiceId),
     });
     state.lastEvent = { type: 'answer', outcome, gained };
     expireIfNeeded();

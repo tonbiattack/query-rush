@@ -83,6 +83,8 @@ function main() {
           showBefore: question.showBefore ?? true,
           correct: question.correct,
           distractors: question.distractors,
+          /** 誤答時に「その選択肢だとどうなったか」を見せるためのデータ（#23） */
+          distractorPreviews: question.distractorPreviews ?? {},
           explanation: question.explanation,
         })),
       ]),
@@ -93,7 +95,7 @@ function main() {
   mkdirSync(DIST, { recursive: true });
 
   // 3. 静的ファイルをコピー
-  for (const file of ['index.html', 'styles.css', 'app.js', 'records.js', 'engine.js', 'format.js']) {
+  for (const file of ['index.html', 'styles.css', 'app.js', 'records.js', 'engine.js', 'format.js', 'explain.js']) {
     cpSync(join(PUBLIC, file), join(DIST, file));
   }
 

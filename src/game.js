@@ -13,6 +13,7 @@
  */
 import { CONFIG } from './config.js';
 import { MODES, modeOf } from './modes.js';
+import { explainWrongChoice } from './questions.js';
 
 /** 速度ボーナス。残り時間の割合に比例して0〜speedBonusMax */
 export function speedBonus(remainingMs, limitMs) {
@@ -224,6 +225,24 @@ export function createGame({
   }
 
   /**
+   * 誤答の詳細（#23）。
+   * 選んだ選択肢だとどの結果になったかを、正解との差分つきで返す。
+   * 結果はビルド時に求めたものをそのまま使う（ブラウザでSQLを実行しない）。
+   */
+  function buildWrongDetail(question, choiceId) {
+    const preview = question.distractorPreviews?.[choiceId];
+    if (!preview) return null;
+    return {
+      reason: explainWrongChoice(question, choiceId),
+      rows: preview.rows,
+      /** 集計は選択肢ごとに列が違う */
+      columns: preview.columns ?? null,
+      extra: preview.extra ?? [],
+      missing: preview.missing ?? [],
+    };
+  }
+
+  /**
    * 正誤表示を抜ける。停止していた時間だけセッション終了時刻を延ばす（#7）。
    * これにより「正誤表示中に10秒待っても残り時間が減らない」が成立する。
    */
@@ -275,6 +294,8 @@ export function createGame({
       correctId: question.correct.id,
       gained,
       explanation: question.explanation,
+      /** 誤答時だけ、その選択肢だとどうなったかを見せる（#23） */
+      wrongDetail: isCorrect ? null : buildWrongDetail(question, choiceId),
     });
     state.lastEvent = { type: 'answer', outcome, gained };
 

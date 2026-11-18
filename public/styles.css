@@ -565,6 +565,81 @@ body {
   color: var(--washi-dim);
 }
 
+/* 誤答の詳細（#23）。既定は閉じておき、読みたい人だけ開く */
+.reveal-detail {
+  grid-column: 1 / -1;
+  border-top: 1px solid #ffffff12;
+  padding-top: 8px;
+}
+
+.reveal-detail[hidden] {
+  display: none;
+}
+
+.reveal-detail-summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ochre);
+  list-style: none;
+}
+
+.reveal-detail-summary::-webkit-details-marker {
+  display: none;
+}
+
+.reveal-detail-summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 90ms ease;
+}
+
+.reveal-detail[open] .reveal-detail-summary::before {
+  content: "▾ ";
+}
+
+.reveal-detail-summary:hover {
+  color: var(--washi);
+}
+
+.reveal-detail-body {
+  margin-top: 8px;
+  max-height: 220px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.reveal-detail-caption {
+  margin: 0 0 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--washi-faint);
+}
+
+.reveal-detail-diff {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--washi-dim);
+}
+
+/* 選んだ条件で「正解にない行」 */
+.data-table tbody tr.is-extra td {
+  color: var(--maguro);
+  background: #d2454b1f;
+}
+
+.data-table tbody tr.is-extra td:first-child {
+  box-shadow: inset 2px 0 0 var(--maguro);
+}
+
+/* 選んだ条件で「足りない行」 */
+.data-table tbody tr.is-missing td {
+  color: var(--ochre);
+  background: #d3a24a1a;
+  text-decoration: line-through;
+  text-decoration-color: #d3a24a66;
+}
+
 .btn {
   padding: 0 20px;
   height: 40px;

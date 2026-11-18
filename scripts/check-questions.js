@@ -118,6 +118,34 @@ function main() {
       }
     }
     console.log(`  ${questions.length}問すべて検証OK`);
+
+    // 7. 偏りの検証（#22）
+    //    同じデータセットに問題が集中していないか、同じ正解パターンが続いていないか
+    const byDataset = new Map();
+    for (const question of questions) {
+      byDataset.set(question.datasetId, (byDataset.get(question.datasetId) ?? 0) + 1);
+    }
+    const datasetCounts = [...byDataset.values()];
+    const maxPerDataset = Math.max(...datasetCounts);
+    const share = maxPerDataset / questions.length;
+    // データセットが1種類しかないモードは、集中していて当然なので判定しない
+    if (byDataset.size > 1 && share > 0.6) {
+      failures += 1;
+      console.log(`  ✗ 偏り: 1データセットが${Math.round(share * 100)}%を占めています`);
+    }
+
+    // 同じ正解ラベルの連続（並び順はランダムなので、生成順で隣接するものだけ見る）
+    let consecutiveSame = 0;
+    for (let i = 1; i < questions.length; i += 1) {
+      if (questions[i].correct.label === questions[i - 1].correct.label) consecutiveSame += 1;
+    }
+    if (consecutiveSame > 0) {
+      console.log(`  ! 同じ正解ラベルが隣接: ${consecutiveSame}件（出題順はシャッフルされるため許容）`);
+    }
+
+    // 正解ラベルの種類数（バリエーション）
+    const uniqueLabels = new Set(questions.map((q) => q.correct.label)).size;
+    console.log(`  データセット: ${byDataset.size}種 / 正解ラベル: ${uniqueLabels}種`);
   }
 
   engine.close();

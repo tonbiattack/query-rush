@@ -187,8 +187,8 @@ describe('問題の生成条件', () => {
   });
 
   test('Pipeline は最終段で行が変わる（段を追う意味がある）', () => {
-    const dataset = allDatasets().find((d) => d.id === 'members');
     for (const question of bank.pipeline) {
+      const dataset = allDatasets().find((d) => d.id === question.datasetId);
       const pipeline = dataset.pipelines.find((p) => `${dataset.id}:${p.id}` === question.id);
       const result = engine.runPipeline(dataset, pipeline);
       const lastStage = result.stages[result.stages.length - 1];
