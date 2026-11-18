@@ -1,9 +1,28 @@
 {
   "name": "query-rush",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "UI Rush の骨格を SQL に移植した、4択で選ぶ認識ゲーム",
+  "description": "絞り込み前後のテーブルを見て、どのWHEREでそうなったかを4択で当てるSQL認識ゲーム",
+  "keywords": [
+    "sql",
+    "quiz",
+    "game",
+    "sqlite",
+    "learning",
+    "github-pages",
+    "vanilla-js"
+  ],
+  "homepage": "https://tonbiattack.github.io/query-rush/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tonbiattack/query-rush.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tonbiattack/query-rush/issues"
+  },
+  "license": "MIT",
+  "author": "tonbiattack",
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
