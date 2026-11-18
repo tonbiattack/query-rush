@@ -223,11 +223,28 @@ function renderTables(view) {
     );
   }
 
-  if (question.stages && question.stages.length > 0) {
-    el.afterBody.replaceChildren(buildStages(question.columns, question.stages, question.after));
+  // パイプラインは「何段あるか」だけを示す（段の中身は答えになるので出さない）
+  if (question.stageCount > 0) {
+    el.afterBody.replaceChildren(
+      buildStageNote(question.stageCount),
+      buildTable(question.columns, question.after, () => 'is-kept'),
+    );
   } else {
     el.afterBody.replaceChildren(buildTable(question.columns, question.after, () => 'is-kept'));
   }
+}
+
+/**
+ * パイプラインの段数だけを示す。
+ *
+ * 段ごとの条件や中間結果を出すと、それがそのまま答えになる。
+ * 「何段の処理を通ったか」だけを手がかりに、最終結果から逆算させる。
+ */
+function buildStageNote(stageCount) {
+  const note = document.createElement('p');
+  note.className = 'stage-note';
+  note.textContent = `CTE ${stageCount - 1}段 → 最終結果`;
+  return note;
 }
 
 function renderChoices(view) {
@@ -349,41 +366,12 @@ function buildTable(columns, rows, classOf) {
   return table;
 }
 
-function buildStages(columns, stages, finalRows) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'stages';
-
-  stages.forEach((stage, index) => {
-    const block = document.createElement('div');
-    block.className = 'stage-block';
-
-    const label = document.createElement('p');
-    label.className = 'stage-label';
-    label.textContent = `WITH ${stage.name} (${stage.where})`;
-    block.append(label);
-    block.append(buildTable(columns, stage.rows, () => 'is-kept'));
-    wrapper.append(block);
-
-    if (index < stages.length - 1) {
-      const arrow = document.createElement('div');
-      arrow.className = 'stage-arrow';
-      arrow.textContent = '↓';
-      wrapper.append(arrow);
-    }
-  });
-
-  const finalBlock = document.createElement('div');
-  finalBlock.className = 'stage-block';
-  const finalLabel = document.createElement('p');
-  finalLabel.className = 'stage-label';
-  finalLabel.textContent = '最終結果';
-  finalBlock.append(finalLabel);
-  finalBlock.append(buildTable(columns, finalRows, () => 'is-kept'));
-  wrapper.append(finalBlock);
-
-  return wrapper;
-}
-
+/**
+ * パイプラインの中間段を「段 → 段 → 最終」で見せる。
+ *
+ * 段のラベルに条件（`team = 'a'` など）を出してはいけない。
+ * それがそのまま答えになるため、段の名前だけを示す。
+ */
 function formatCell(value) {
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'number') return value.toLocaleString('ja-JP');

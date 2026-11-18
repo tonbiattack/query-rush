@@ -247,32 +247,15 @@ body {
   grid-template-columns: minmax(0, 1fr);
 }
 
-/* パイプラインの中間段 */
-.stages {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.stage-block {
-  border: 1px solid #ffffff0f;
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-.stage-label {
+/* パイプラインの段数表示。条件は伏せて「何段通ったか」だけを示す */
+.stage-note {
   margin: 0;
-  padding: 3px 9px;
-  background: #ffffff08;
+  padding: 4px 10px;
+  border-bottom: 1px solid #ffffff0f;
+  background: #ffffff06;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--washi-faint);
-}
-
-.stage-arrow {
-  text-align: center;
-  font-size: 11px;
-  color: #ffffff2e;
 }
 
 .panel {

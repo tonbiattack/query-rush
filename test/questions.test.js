@@ -174,7 +174,29 @@ describe('問題の生成条件', () => {
   test('Pipeline は CTE を含む', () => {
     for (const question of bank.pipeline) {
       assert.match(question.correct.label, /WITH/);
-      assert.ok(question.stages.length > 0, question.id);
+      assert.ok(question.stageCount > 0, question.id);
+    }
+  });
+
+  test('Pipeline は段の中身を問題に含めない（答えが漏れない）', () => {
+    for (const question of bank.pipeline) {
+      // 段の条件や中間結果を持たせない。持たせるとそれが答えになる
+      assert.equal(question.stages, undefined, `${question.id}: stages を持っている`);
+      assert.equal(typeof question.stageCount, 'number', question.id);
+    }
+  });
+
+  test('Pipeline は最終段で行が変わる（段を追う意味がある）', () => {
+    const dataset = allDatasets().find((d) => d.id === 'members');
+    for (const question of bank.pipeline) {
+      const pipeline = dataset.pipelines.find((p) => `${dataset.id}:${p.id}` === question.id);
+      const result = engine.runPipeline(dataset, pipeline);
+      const lastStage = result.stages[result.stages.length - 1];
+      assert.notEqual(
+        signatureOf(lastStage.rows, question.columns),
+        signatureOf(result.rows, question.columns),
+        `${question.id}: 中間結果と最終結果が同じ`,
+      );
     }
   });
 
@@ -253,6 +275,20 @@ describe('engine', () => {
     assert.equal(result.ok, true);
     assert.ok(result.stages.length > 0);
     assert.ok(result.rows.length > 0);
+  });
+
+  test('パイプラインの段の条件は累積で効く', () => {
+    const dataset = allDatasets().find((d) => d.id === 'members');
+    const pipeline = dataset.pipelines.find((p) => p.id === 'mb_cte_two_step');
+    const result = engine.runPipeline(dataset, pipeline);
+    assert.equal(result.ok, true);
+    // 2段目は1段目の結果を引き継ぐ（active = 1 の行だけが対象）
+    const stage2 = result.stages[1];
+    assert.ok(stage2.rows.every((row) => row.active === 1), '1段目の条件が引き継がれていない');
+    assert.ok(stage2.rows.every((row) => row.score >= 70), '2段目の条件が効いていない');
+    // 最終段はさらに絞られる
+    assert.ok(result.rows.length < stage2.rows.length, '最終段で行が減っていない');
+    assert.ok(result.rows.every((row) => row.plan === 'pro'), '最終条件が効いていない');
   });
 
   test('取得上限を超えたら打ち切る', () => {

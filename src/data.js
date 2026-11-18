@@ -415,7 +415,13 @@ export const MODE_DATASETS = [
       { id: 'mb_team_b', label: "team = 'b'", sql: "team = 'b'" },
       { id: 'mb_score_lt60', label: 'score < 60', sql: 'score < 60' },
     ],
-    /** パイプライン問題（CTE / JOIN）の定義 */
+    /**
+     * パイプライン問題（CTE）の定義。
+     *
+     * 各段の条件は累積で効く。最終段（finalWhere）で必ず行が減るようにしてある。
+     * 中間結果と最終結果が同じだと「段を追う」意味がなくなるため、
+     * 生成側（questions.js）がその条件を検証して弾く。
+     */
     pipelines: [
       {
         id: 'mb_cte_high',
@@ -458,6 +464,15 @@ export const MODE_DATASETS = [
         label: 'WITH f AS (plan = free) SELECT * FROM f WHERE active = 1',
         steps: [{ name: 'f', where: "plan = 'free'" }],
         finalWhere: 'active = 1',
+      },
+      {
+        id: 'mb_cte_two_step',
+        label: 'WITH a AS (active = 1), b AS (score >= 70) SELECT * FROM b',
+        steps: [
+          { name: 'a', where: 'active = 1' },
+          { name: 'b', where: 'score >= 70' },
+        ],
+        finalWhere: "plan = 'pro'",
       },
     ],
   },
